@@ -133,6 +133,8 @@ bool Configuration::writeFile() {
         data["loraConfig"]["repeaterMode"]          = lora.repeaterMode;
         data["loraConfig"]["digipeatAlias"]         = lora.digipeatAlias;
         data["loraConfig"]["txFormat"]              = lora.txFormat;
+        data["loraConfig"]["compressTx"]            = lora.compressTx;
+        data["loraConfig"]["compressFullEvery"]     = lora.compressFullEvery;
 
         data["telemetry"]["active"]                 = telemetry.active;
         data["telemetry"]["sendTelemetry"]          = telemetry.sendTelemetry;
@@ -323,6 +325,10 @@ bool Configuration::readFile() {
         if (!data["loraConfig"].containsKey("txFormat")) needsRewrite = true;
         lora.txFormat                   = data["loraConfig"]["txFormat"] | 0;
         if (lora.txFormat < 0 || lora.txFormat > 2) lora.txFormat = 0;
+        if (!data["loraConfig"].containsKey("compressTx")) needsRewrite = true;
+        lora.compressTx                 = data["loraConfig"]["compressTx"] | false;
+        if (!data["loraConfig"].containsKey("compressFullEvery")) needsRewrite = true;
+        lora.compressFullEvery          = data["loraConfig"]["compressFullEvery"] | 2;
 
         if (!data["telemetry"].containsKey("active") ||
             !data["telemetry"].containsKey("sendTelemetry") ||
@@ -522,6 +528,8 @@ void Configuration::setDefaultValues() {
     lora.repeaterMode               = false;
     lora.digipeatAlias              = "WIDE1-1";   // fill-in role: relay trackers not yet repeated
     lora.txFormat                   = 0;
+    lora.compressTx                 = false;       // experimental compressed frames: transmit off by default
+    lora.compressFullEvery          = 2;
 
     telemetry.active                 = false;
     telemetry.sendTelemetry          = false;

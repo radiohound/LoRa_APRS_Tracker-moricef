@@ -32,6 +32,8 @@
 #include "display.h"
 #include "station_utils.h"
 #include "storage_utils.h"
+#include "AprsCompress.h"
+#include "AprsCompressStore.h"
 #ifdef USE_LVGL_UI
 #include "lvgl_ui.h"
 #endif
@@ -104,6 +106,89 @@ int pendingDataRate = -1;
 #endif
 
 namespace LoRa_Utils {
+
+    // Experimental order-3 compression (APRS-PPM), see tools/aprs_compress in the LoRa_APRS_iGate fork.
+    // A compressed frame is expanded back to "\x3c\xff\x01" + text as it is read, so everything after this
+    // sees the same packets as before.  Reads into a byte buffer because RadioLib's String overload stops at
+    // the first NUL byte.  Two small stores of "last packet per station" support primed frames: rxStore holds
+    // what we have received (the reference for decoding), txStore what we have sent (the reference for encoding).
+    static AprsCompress::PacketStore rxStore;
+    static AprsCompress::PacketStore txStore;
+
+    static String payloadToText(uint8_t* data, size_t length);   // defined below (native frames)
+
+    static int16_t readFrame(String& packet) {
+        size_t len = radio.getPacketLength();
+        if (len > 255) len = 255;
+        uint8_t buf[256];
+        int16_t state = radio.readData(buf, len);
+        if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_ERR_CRC_MISMATCH || state == RADIOLIB_ERR_LORA_HEADER_DAMAGED) {
+            if (state == RADIOLIB_ERR_NONE && AprsCompress::isCompressedHeader(buf, len)) {
+                uint8_t text[AprsCompress::MAX_TEXT + 1];
+                size_t n = AprsCompress::decodeFrame(buf, len, text, AprsCompress::MAX_TEXT);
+                if (n == 0) return RADIOLIB_ERR_UNKNOWN;
+                text[n] = 0;
+                packet = "\x3c\xff\x01" + String(reinterpret_cast<char*>(text));
+                rxStore.put(text, n, true);
+                ESP_LOGI(TAG, "Compressed frame: %u B on air, %u B expanded", (unsigned)len, (unsigned)(n + 3));
+            } else if (state == RADIOLIB_ERR_NONE && AprsCompress::isPrimedHeader(buf, len)) {
+                uint8_t id = 0, check = 0;
+                AprsCompress::primedHeader(buf, len, id, check);
+                AprsCompress::PacketStore::Entry* ref = rxStore.findForFrame(id, check);
+                if (ref == nullptr) {
+                    ESP_LOGI(TAG, "Primed frame dropped: no matching reference (station id %u, check %u)", id, check);
+                    return RADIOLIB_ERR_UNKNOWN;
+                }
+                uint8_t text[AprsCompress::MAX_TEXT + 1];
+                size_t n = AprsCompress::decodePrimed(ref->text, ref->len, buf, len, text, AprsCompress::MAX_TEXT);
+                if (n == 0) {
+                    ESP_LOGI(TAG, "Primed frame dropped: did not decode");
+                    return RADIOLIB_ERR_UNKNOWN;
+                }
+                text[n] = 0;
+                packet = "\x3c\xff\x01" + String(reinterpret_cast<char*>(text));
+                rxStore.put(text, n, false);
+                ESP_LOGI(TAG, "Primed frame: %u B on air, %u B expanded", (unsigned)len, (unsigned)(n + 3));
+            } else {
+                buf[len] = 0;
+                if (state == RADIOLIB_ERR_NONE && len > 4 && buf[0] == 0x3C && buf[1] == 0xFF && buf[2] == 0x01)
+                    rxStore.put(buf + 3, len - 3, true);
+                // plain text frame or a native frame (3C FF 02): the existing decoder
+                if (state == RADIOLIB_ERR_NONE) packet = payloadToText(buf, len);
+                else packet = String(reinterpret_cast<char*>(buf));
+            }
+        }
+        return state;
+    }
+
+    // Sends one packet.  When compression is on it sends the smallest of: a primed frame (only if we sent an
+    // earlier packet from the same source and fewer than compressFullEvery - 1 primed frames have gone since
+    // the last full one), a full compressed frame, or the plain frame.
+    static int16_t transmitText(const String& text) {
+        const uint8_t* t = reinterpret_cast<const uint8_t*>(text.c_str());
+        size_t tl = text.length();
+        if (Config.lora.compressTx && tl > 0 && tl <= AprsCompress::MAX_TEXT) {
+            uint8_t full[256], primed[256];
+            size_t nf = AprsCompress::encodeFrame(t, tl, full, sizeof(full));
+            size_t np = 0;
+            int fullEvery = Config.lora.compressFullEvery;
+            AprsCompress::PacketStore::Entry* ref = txStore.findBySource(t, tl);
+            if (ref != nullptr && fullEvery > 1 && (int)ref->sinceFull + 1 < fullEvery)
+                np = AprsCompress::encodePrimed(ref->text, ref->len, t, tl, primed, sizeof(primed));
+            if (np > 0 && (nf == 0 || np < nf)) {
+                ESP_LOGI(TAG, "Primed frame: %u B instead of %u B", (unsigned)np, (unsigned)(tl + 3));
+                txStore.put(t, tl, false);
+                return radio.transmit(primed, np);
+            }
+            txStore.put(t, tl, true);
+            if (nf > 0) {
+                ESP_LOGI(TAG, "Compressed frame: %u B instead of %u B", (unsigned)nf, (unsigned)(tl + 3));
+                return radio.transmit(full, nf);
+            }
+        }
+        txStore.put(t, tl, true);               // receivers store plain packets too, so this stays in step
+        return radio.transmit("\x3c\xff\x01" + text);
+    }
 
     void setFlag(void) {
         operationDone = true;
@@ -439,13 +524,9 @@ namespace LoRa_Utils {
     }
 
     // Raw read: a native frame contains zero bytes, which readData(String&) would cut at.
+    // Reads the received frame (plain, native or compressed) as text; see readFrame().
     static int readPayload(String& text) {
-        uint8_t buffer[256];
-        size_t length = radio.getPacketLength();
-        if (length > sizeof(buffer) - 1) length = sizeof(buffer) - 1;
-        int state = radio.readData(buffer, length);
-        if (state == RADIOLIB_ERR_NONE) text = payloadToText(buffer, length);
-        return state;
+        return readFrame(text);
     }
 
     // Native form of a text packet, or empty when it has to go as text.
@@ -489,7 +570,7 @@ namespace LoRa_Utils {
         if (Config.lora.txFormat == 1 && !native.empty()) {
             state = radio.transmit(native.data(), native.size());
         } else {
-            state = radio.transmit("\x3c\xff\x01" + newPacket);
+            state = transmitText(newPacket);   // plain text frame, or its compressed form when compressTx is on
             if (state == RADIOLIB_ERR_NONE && Config.lora.txFormat == 2 && !native.empty()) {
                 state = radio.transmit(native.data(), native.size());
             }
