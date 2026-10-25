@@ -26,16 +26,23 @@ specific to the T-Deck tracker.
 |---|---|
 | Hardware | T-Deck Plus, 433 MHz (`ttgo_t_deck_plus_433`), SX1262 |
 | Receive, 24 October 2026 | 16 of 16 packets from an ESP32 sender at 433.775 MHz, SF12, 125 kHz: 8 compressed frames (4 full at 29 B, 4 primed at 9 to 10 B, against 42 to 43 B plain) all expanded to exactly the text sent; none dropped |
-| Transmit | **Not tested yet** |
+| Transmit, 24 October 2026 | The start-up beacon and 5 beacon-button presses, all sent with `compressTx` on. An ESP32 receiver decoded 6 of 6 exactly (full frames 23 to 24 B and primed frames 13 to 15 B against 40 B plain for a position beacon; 31 B against 75 B for the start-up beacon, which carries a comment). A Raspberry Pi 2 miles away, still on the old Direwolf, heard all 6 (-95 to -98 dBm) but could only log them as unreadable. After it was upgraded to the Direwolf branch, one further beacon (23 B) was expanded and passed to APRS-IS as an ordinary packet within a second |
 | Build size | 71.8 % of the 3 MB application partition, 69.3 % of RAM |
 | Other boards (T-Beam, CrowPanel, DIY) | **Not built, not tested** |
 
 ## Before you turn transmit on
 
 Only receivers that run the compression code can read a compressed frame. Today that is this branch, a fork of the
-ESP32 iGate firmware, and a Direwolf branch. **Other people's iGates will not decode your beacons**, so your
-station would not appear on maps that depend on them. The tracker also sends a beacon every time it starts.
-Use spare equipment and your own callsign, and leave it off unless you are testing with a receiver you control.
+ESP32 iGate firmware, and a Direwolf branch. **Other people's iGates will not decode your beacons**, so unless a
+compression-aware receiver hears you, your station will not appear on maps that depend on them. The tracker also sends
+a beacon every time it starts. Use spare equipment and your own callsign, and leave it off unless you are testing with
+a receiver you control.
+
+**A bridge is possible.** In the test above, an iGate running the Direwolf branch expanded a compressed beacon and
+gated it to APRS-IS as a normal packet (`K6ATV-4>...,qAO,<igate>:...`) one second after it was sent (seen once; not
+yet watched over a long period). Only the
+tracker and that one iGate needed the new code; everything downstream saw ordinary APRS. So the safe way to use
+compressed transmit is within range of such an iGate.
 
 ## Building it
 

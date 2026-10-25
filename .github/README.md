@@ -13,7 +13,9 @@ project. It adds an optional frame format that carries the same APRS text in few
 * **Receive is always on. Transmit is off by default.**
 * Tested so far (24 October 2026, T-Deck Plus 433 MHz, SF12): the T-Deck received 16 of 16 packets from an ESP32
   sender, including 8 compressed frames (9 to 29 B on air against 42 to 43 B plain), all decoded exactly.
-  **Sending compressed frames from the T-Deck has not been tested yet.**
+  Sending compressed frames from the T-Deck was tested the same day: an ESP32 decoded 6 of 6 beacons exactly
+  (position beacons 13 to 15 B primed or 23 to 24 B full, against 40 B plain), and, after the hill iGate was upgraded to our Direwolf
+  branch, one further beacon was expanded and gated to APRS-IS as a normal packet one second later.
 * Not tested: other boards, other spreading factors, weak signals, and how other firmware reacts to a compressed frame.
   Please use spare equipment.
 * A fresh clone of the original repository does not build because of a missing NeoGPS submodule; the page above has the
