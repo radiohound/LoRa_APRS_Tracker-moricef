@@ -5,6 +5,9 @@ It is not a pull request and not part of that project. It adds an optional frame
 APRS text in fewer bytes. Plain LoRa APRS frames are unchanged, and firmware that does not know the new frame
 type ignores it.
 
+It is shown as an idea that works, not as a request: **no pull request will be opened against the original project
+unless its maintainer says a pull request would be welcome.**
+
 The format, the reasons for it, and the measurements are described in the
 [iGate branch page](https://github.com/radiohound/LoRa_APRS_iGate/blob/feature/order3-compression/tools/aprs_compress/EXPERIMENT.md)
 and the [proposal repository](https://github.com/radiohound/aprs-compression-proposal). This page covers what is

@@ -4,6 +4,9 @@ This is a branch of a **fork** of [moricef/LoRa_APRS_Tracker](https://github.com
 (the original project and its own README are there). It is an experiment, **not a pull request** and not part of that
 project. It adds an optional frame format that carries the same APRS text in fewer bytes.
 
+It is shown as an idea that works, not as a request: **no pull request will be opened against the original project
+unless its maintainer says a pull request would be welcome.**
+
 **Start here: [what it does on the T-Deck, what has been tested, how to build it, and the warnings](https://github.com/radiohound/LoRa_APRS_Tracker-moricef/blob/ppm-compression/docs/APRS-PPM-TDECK.md)**
 
 ## In short
