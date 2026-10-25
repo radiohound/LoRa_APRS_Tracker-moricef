@@ -130,6 +130,8 @@ public:
     bool    sendInfo;
     bool    repeaterMode;
     String  digipeatAlias;      // alias matched when repeating (fill-in = WIDE1-1)
+    bool    compressTx;         // experimental: send order-3 compressed frames (receivers always decode them)
+    int     compressFullEvery;  // with compressTx: a full compressed frame at least every Nth packet; the rest are primed (1 = never primed)
 };
 
 class PTT {
