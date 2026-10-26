@@ -5,7 +5,7 @@ It is not a pull request and not part of that project. It adds an optional frame
 APRS text in fewer bytes. Plain LoRa APRS frames are unchanged, and firmware that does not know the new frame
 type ignores it.
 
-It is shown as an idea that works, not as a request: **no pull request will be opened against the original project
+It is an idea that is showing promise and needs more testing, shared so people can try it, not as a request: **no pull request will be opened against the original project
 unless its maintainer says a pull request would be welcome.**
 
 The format, the reasons for it, and the measurements are described in the
@@ -30,6 +30,7 @@ specific to the T-Deck tracker.
 | Hardware | T-Deck Plus, 433 MHz (`ttgo_t_deck_plus_433`), SX1262 |
 | Receive, 24 October 2026 | 16 of 16 packets from an ESP32 sender at 433.775 MHz, SF12, 125 kHz: 8 compressed frames (4 full at 29 B, 4 primed at 9 to 10 B, against 42 to 43 B plain) all expanded to exactly the text sent; none dropped |
 | Transmit, 24 October 2026 | The start-up beacon and 5 beacon-button presses, all sent with `compressTx` on. An ESP32 receiver decoded 6 of 6 exactly (full frames 23 to 24 B and primed frames 13 to 15 B against 40 B plain for a position beacon; 31 B against 75 B for the start-up beacon, which carries a comment). A Raspberry Pi 2 miles away, still on the old Direwolf, heard all 6 (-95 to -98 dBm) but could only log them as unreadable. After it was upgraded to the Direwolf branch, one further beacon (23 B) was expanded and passed to APRS-IS as an ordinary packet within a second |
+| A full day, 24 to 25 October 2026 | A beacon every 15 minutes, received by a Direwolf iGate about 2 miles away at -95 to -98 dBm: 80 beacons expanded and gated to APRS-IS of about 96 sent; 51 % fewer bytes on the air (1,736 B against 3,515 B); full frames 47 % smaller, primed frames 55 % smaller; 6 primed frames were dropped by the receiver for lack of their full frame. The gateway's log, not a count on the T-Deck |
 | Build size | 71.8 % of the 3 MB application partition, 69.3 % of RAM |
 | Other boards (T-Beam, CrowPanel, DIY) | **Not built, not tested** |
 
