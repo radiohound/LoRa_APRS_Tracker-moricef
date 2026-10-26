@@ -146,6 +146,10 @@ namespace LoRa_Utils {
                 packet = "\x3c\xff\x01" + String(reinterpret_cast<char*>(text));
                 rxStore.put(text, n, false);
                 ESP_LOGI(TAG, "Primed frame: %u B on air, %u B expanded", (unsigned)len, (unsigned)(n + 3));
+            } else if (len >= 3 && buf[0] == 0x3C && buf[1] == 0xFF && buf[2] != 0x01) {
+                // A 3C FF frame of a type we do not know (another model version, another format): drop it, never show it as text.
+                ESP_LOGI(TAG, "Frame with an unknown 3C FF type dropped: %02x", (unsigned)buf[2]);
+                return RADIOLIB_ERR_UNKNOWN;
             } else {
                 buf[len] = 0;
                 if (state == RADIOLIB_ERR_NONE && len > 4 && buf[0] == 0x3C && buf[1] == 0xFF && buf[2] == 0x01)
