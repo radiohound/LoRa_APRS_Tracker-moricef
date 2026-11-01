@@ -29,6 +29,7 @@
 #include "board_pinout.h"
 #include "lora_utils.h"
 #include "native_aprs.h"
+#include "hybrid_frame.h"
 #include "display.h"
 #include "station_utils.h"
 #include "storage_utils.h"
@@ -509,6 +510,16 @@ namespace LoRa_Utils {
     // frame would have given; a text frame keeps the behaviour of
     // readData(String&), which stops at the first zero byte.
     static String payloadToText(uint8_t* data, size_t length) {
+        if (HYBRID_FRAME::isHybrid(data, length)) {                     // native frame, kind 2 or 3: PPM-coded content (spec 11)
+            std::string tnc2;
+            std::vector<NATIVE_APRS::RxtTuple> rxt;
+            if (!HYBRID_FRAME::decode(data, length, tnc2, rxt)) {
+                ESP_LOGW(TAG, "Hybrid frame dropped (%u bytes)", (unsigned)length);
+                return "";
+            }
+            ESP_LOGI(TAG, "Hybrid frame %u bytes, %u expanded", (unsigned)length, (unsigned)(tnc2.size() + 3));
+            return String("\x3c\xff\x01") + NATIVE_APRS::toText(tnc2, rxt).c_str();
+        }
         if (NATIVE_APRS::isNativeFrame(data, length)) {
             std::string tnc2;
             std::vector<NATIVE_APRS::RxtTuple> rxt;
@@ -541,6 +552,18 @@ namespace LoRa_Utils {
         return frame;
     }
 
+    // Hybrid form (spec 11) of a text packet, or empty when it has to go as text.
+    static std::vector<uint8_t> hybridFrame(const String& packet) {
+        std::string tnc2;
+        std::vector<NATIVE_APRS::RxtTuple> rxt;
+        std::vector<uint8_t> frame;
+        if (!NATIVE_APRS::fromText(std::string(packet.c_str(), packet.length()), "", tnc2, rxt) ||
+            !HYBRID_FRAME::encode(tnc2, rxt, frame)) {
+            return {};
+        }
+        return frame;
+    }
+
     void sendNewPacket(const String& newPacket) {
         if (!loraInitOk) return;
         ESP_LOGI(TAG, "Tx ---> %s", newPacket.c_str());
@@ -562,12 +585,15 @@ namespace LoRa_Utils {
         loraSpiBegin();
 
         std::vector<uint8_t> native;
-        if (Config.lora.txFormat != 0) {
+        if (Config.lora.txFormat == 3) {
+            native = hybridFrame(newPacket);
+            if (native.empty()) ESP_LOGW(TAG, "Hybrid: sent as text, packet cannot be encoded");
+        } else if (Config.lora.txFormat != 0) {
             native = nativeFrame(newPacket);
             if (native.empty()) ESP_LOGW(TAG, "Native: sent as text, packet cannot be encoded");
         }
         int state;
-        if (Config.lora.txFormat == 1 && !native.empty()) {
+        if ((Config.lora.txFormat == 1 || Config.lora.txFormat == 3) && !native.empty()) {
             state = radio.transmit(native.data(), native.size());
         } else {
             state = transmitText(newPacket);   // plain text frame, or its compressed form when compressTx is on
@@ -576,7 +602,7 @@ namespace LoRa_Utils {
             }
         }
         if (!native.empty()) {
-            ESP_LOGI(TAG, "Native Tx %u bytes (text frame %u bytes)", (unsigned)native.size(), (unsigned)(newPacket.length() + 3));
+            ESP_LOGI(TAG, "%s Tx %u bytes (text frame %u bytes)", Config.lora.txFormat == 3 ? "Hybrid" : "Native", (unsigned)native.size(), (unsigned)(newPacket.length() + 3));
         }
         transmitFlag = true;
         loraSpiEnd();
