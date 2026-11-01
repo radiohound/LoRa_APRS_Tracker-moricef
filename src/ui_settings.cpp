@@ -33,6 +33,8 @@ static const char *TAG = "UISettings";
 #include "storage_utils.h"
 #include "utils.h"
 #include "wifi_utils.h"
+#include "hybrid_frame.h"
+#include <esp_heap_caps.h>
 #include "display.h"
 
 // External variables from main code
@@ -1876,6 +1878,12 @@ void UISettings::openWebConf() {
     // Load screen and refresh
     lv_scr_load(screen_webconf);
     lv_timer_handler();
+
+    // Joining an access point needs free internal memory (the tracker had about 25 KB left). Give back the hybrid task's 16 KB stack first.
+    ESP_LOGI(TAG, "Web-Conf: internal heap free %u (largest block %u) before releasing the hybrid task", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    HYBRID_FRAME::shutdown();
+    vTaskDelay(pdMS_TO_TICKS(300));   // the idle task frees the stack
+    ESP_LOGI(TAG, "Web-Conf: internal heap free %u (largest block %u) after", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     // Start AP mode
     bool success = WIFI_Utils::startAPModeNonBlocking();

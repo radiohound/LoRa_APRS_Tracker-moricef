@@ -21,6 +21,7 @@
 #include <esp_wifi.h>
 #include <esp_task_wdt.h>
 #include <esp_netif.h>
+#include <esp_heap_caps.h>
 #include "configuration.h"
 #include "wifi_utils.h"
 #include "web_utils.h"
@@ -350,24 +351,35 @@ namespace WIFI_Utils {
     }
 
     // Non-blocking AP mode for LVGL UI
+    // Web-Conf Mode: log what happens at the access point, so a failed join leaves a trace
+    static void apEvent(arduino_event_id_t e, arduino_event_info_t info) {
+        const uint8_t* m = nullptr;
+        switch (e) {
+            case ARDUINO_EVENT_WIFI_AP_STACONNECTED:    m = info.wifi_ap_staconnected.mac;
+                ESP_LOGI(TAG, "AP station joined %02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]); break;
+            case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: m = info.wifi_ap_stadisconnected.mac;
+                ESP_LOGI(TAG, "AP station left %02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]); break;
+            case ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED:   ESP_LOGI(TAG, "AP station got an IP address"); break;
+            default: break;
+        }
+    }
+
     bool startAPModeNonBlocking() {
         String apName = "LoRa-Tracker-AP";
 
-        ESP_LOGW(TAG, "Starting AP Mode: %s", apName.c_str());
+        ESP_LOGW(TAG, "Starting AP Mode: %s (CPU was %d MHz)", apName.c_str(), (int)getCpuFrequencyMhz());
+        // Full speed while Web-Conf Mode lasts (it ends with a reboot). Not shown to be necessary: the join problem was the mode switch below.
+        setCpuFrequencyMhz(240);
+        WiFi.onEvent(apEvent);
 
-        // Stop any existing WiFi connection
-        WiFi.disconnect(true);
-        delay(100);
-
-        // Configure AP mode
-        WiFi.mode(WIFI_MODE_NULL);
-        delay(100);
+        // Straight into access point mode. The earlier sequence (WiFi.disconnect(true), WiFi.mode(WIFI_MODE_NULL), then WIFI_AP) left the ESP32-S3
+        // advertising the network and answering probes but never completing a join: a phone and a Mac could not connect to LoRa-Tracker-AP, while the same
+        // phone and Mac joined a bare access point on the same board at once. Found by trying the plain call (see docs/HYBRID-TDECK.md).
         WiFi.mode(WIFI_AP);
-        delay(100);
 
         bool success = WiFi.softAP(apName.c_str(), Config.wifiAutoAP.password);
         if (success) {
-            ESP_LOGI(TAG, "AP Started - IP: %s", WiFi.softAPIP().toString().c_str());
+            ESP_LOGI(TAG, "AP Started - IP: %s, CPU %d MHz, password length %u", WiFi.softAPIP().toString().c_str(), (int)getCpuFrequencyMhz(), (unsigned)Config.wifiAutoAP.password.length());
             WEB_Utils::setup();
             WiFiConnected = false;
             WiFiStationMode = false;

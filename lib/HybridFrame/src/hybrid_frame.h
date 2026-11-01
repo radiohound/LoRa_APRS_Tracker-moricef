@@ -18,6 +18,9 @@ namespace HYBRID_FRAME {
     // False when the packet cannot be encoded: the caller then sends it as text.
     bool encode(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out);
 
+    // Gives back the memory of the worker task (16 KB stack) until the next call needs it again. Used when memory is needed elsewhere, e.g. Web-Conf Mode.
+    void shutdown();
+
     // Hybrid frame to TNC2 and RXT tuples. False when the receiver rules of the spec drop the frame.
     bool decode(const uint8_t* data, size_t size, std::string& tnc2, std::vector<NATIVE_APRS::RxtTuple>& rxt);
 

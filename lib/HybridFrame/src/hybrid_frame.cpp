@@ -41,6 +41,7 @@ namespace HYBRID_FRAME {
 
 #ifdef HYBRID_FRAME_WORKER
         SemaphoreHandle_t lockMutex = nullptr, startSem = nullptr, doneSem = nullptr;
+        TaskHandle_t workerHandle = nullptr;
         Job shared;
 
         void workerTask(void*) {
@@ -56,13 +57,17 @@ namespace HYBRID_FRAME {
                 lockMutex = xSemaphoreCreateMutex();
                 startSem = xSemaphoreCreateBinary();
                 doneSem = xSemaphoreCreateBinary();
-                if (lockMutex == nullptr || startSem == nullptr || doneSem == nullptr ||
-                    xTaskCreate(workerTask, "hybrid", 16384, nullptr, 1, nullptr) != pdPASS) {
+                if (lockMutex == nullptr || startSem == nullptr || doneSem == nullptr) {
                     lockMutex = nullptr;
                     return false;
                 }
             }
             xSemaphoreTake(lockMutex, portMAX_DELAY);
+            if (workerHandle == nullptr && xTaskCreate(workerTask, "hybrid", 16384, nullptr, 1, &workerHandle) != pdPASS) {
+                workerHandle = nullptr;
+                xSemaphoreGive(lockMutex);
+                return false;
+            }
             shared = j;
             xSemaphoreGive(startSem);
             xSemaphoreTake(doneSem, portMAX_DELAY);
@@ -74,6 +79,15 @@ namespace HYBRID_FRAME {
         bool call(Job& j) { run(j); return true; }
 #endif
 
+    }
+
+    void shutdown() {
+#ifdef HYBRID_FRAME_WORKER
+        if (lockMutex == nullptr) return;
+        xSemaphoreTake(lockMutex, portMAX_DELAY);          // no call is running while we hold the lock
+        if (workerHandle != nullptr) { vTaskDelete(workerHandle); workerHandle = nullptr; }
+        xSemaphoreGive(lockMutex);
+#endif
     }
 
     bool isHybrid(const uint8_t* data, size_t size) {
