@@ -584,25 +584,29 @@ namespace LoRa_Utils {
         if (spiMutex) xSemaphoreTakeRecursive(spiMutex, portMAX_DELAY);
         loraSpiBegin();
 
+        int fmt = Config.lora.txFormat;
+#ifdef HYBRID_FORCE_TX
+        fmt = HYBRID_FORCE_TX;   // test builds only (-DHYBRID_FORCE_TX=3): hybrid frames without the settings page
+#endif
         std::vector<uint8_t> native;
-        if (Config.lora.txFormat == 3) {
+        if (fmt == 3) {
             native = hybridFrame(newPacket);
             if (native.empty()) ESP_LOGW(TAG, "Hybrid: sent as text, packet cannot be encoded");
-        } else if (Config.lora.txFormat != 0) {
+        } else if (fmt != 0) {
             native = nativeFrame(newPacket);
             if (native.empty()) ESP_LOGW(TAG, "Native: sent as text, packet cannot be encoded");
         }
         int state;
-        if ((Config.lora.txFormat == 1 || Config.lora.txFormat == 3) && !native.empty()) {
+        if ((fmt == 1 || fmt == 3) && !native.empty()) {
             state = radio.transmit(native.data(), native.size());
         } else {
             state = transmitText(newPacket);   // plain text frame, or its compressed form when compressTx is on
-            if (state == RADIOLIB_ERR_NONE && Config.lora.txFormat == 2 && !native.empty()) {
+            if (state == RADIOLIB_ERR_NONE && fmt == 2 && !native.empty()) {
                 state = radio.transmit(native.data(), native.size());
             }
         }
         if (!native.empty()) {
-            ESP_LOGI(TAG, "%s Tx %u bytes (text frame %u bytes)", Config.lora.txFormat == 3 ? "Hybrid" : "Native", (unsigned)native.size(), (unsigned)(newPacket.length() + 3));
+            ESP_LOGI(TAG, "%s Tx %u bytes (text frame %u bytes)", fmt == 3 ? "Hybrid" : "Native", (unsigned)native.size(), (unsigned)(newPacket.length() + 3));
         }
         transmitFlag = true;
         loraSpiEnd();
