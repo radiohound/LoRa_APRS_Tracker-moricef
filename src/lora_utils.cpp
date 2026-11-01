@@ -116,7 +116,7 @@ namespace LoRa_Utils {
     static AprsCompress::PacketStore rxStore;
     static AprsCompress::PacketStore txStore;
 
-    static String payloadToText(uint8_t* data, size_t length);   // defined below (native frames)
+    static String payloadToText(uint8_t* data, size_t length);   // defined below (native and hybrid frames)
 
     static int16_t readFrame(String& packet) {
         size_t len = radio.getPacketLength();
@@ -540,18 +540,6 @@ namespace LoRa_Utils {
         return readFrame(text);
     }
 
-    // Native form of a text packet, or empty when it has to go as text.
-    static std::vector<uint8_t> nativeFrame(const String& packet) {
-        std::string tnc2;
-        std::vector<NATIVE_APRS::RxtTuple> rxt;
-        std::vector<uint8_t> frame;
-        if (!NATIVE_APRS::fromText(std::string(packet.c_str(), packet.length()), "", tnc2, rxt) ||
-            !NATIVE_APRS::encode(tnc2, rxt, frame) || frame.size() > 255) {
-            return {};
-        }
-        return frame;
-    }
-
     // Hybrid form (spec 11) of a text packet, or empty when it has to go as text.
     static std::vector<uint8_t> hybridFrame(const String& packet) {
         std::string tnc2;
@@ -588,25 +576,17 @@ namespace LoRa_Utils {
 #ifdef HYBRID_FORCE_TX
         fmt = HYBRID_FORCE_TX;   // test builds only (-DHYBRID_FORCE_TX=3): hybrid frames without the settings page
 #endif
-        std::vector<uint8_t> native;
+        std::vector<uint8_t> hybrid;
         if (fmt == 3) {
-            native = hybridFrame(newPacket);
-            if (native.empty()) ESP_LOGW(TAG, "Hybrid: sent as text, packet cannot be encoded");
-        } else if (fmt != 0) {
-            native = nativeFrame(newPacket);
-            if (native.empty()) ESP_LOGW(TAG, "Native: sent as text, packet cannot be encoded");
+            hybrid = hybridFrame(newPacket);
+            if (hybrid.empty()) ESP_LOGW(TAG, "Hybrid: sent as text, packet cannot be encoded");
         }
         int state;
-        if ((fmt == 1 || fmt == 3) && !native.empty()) {
-            state = radio.transmit(native.data(), native.size());
+        if (!hybrid.empty()) {
+            state = radio.transmit(hybrid.data(), hybrid.size());
+            ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes)", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3));
         } else {
             state = transmitText(newPacket);   // plain text frame, or its compressed form when compressTx is on
-            if (state == RADIOLIB_ERR_NONE && fmt == 2 && !native.empty()) {
-                state = radio.transmit(native.data(), native.size());
-            }
-        }
-        if (!native.empty()) {
-            ESP_LOGI(TAG, "%s Tx %u bytes (text frame %u bytes)", fmt == 3 ? "Hybrid" : "Native", (unsigned)native.size(), (unsigned)(newPacket.length() + 3));
         }
         transmitFlag = true;
         loraSpiEnd();

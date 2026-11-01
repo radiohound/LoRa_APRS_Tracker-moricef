@@ -324,7 +324,7 @@ bool Configuration::readFile() {
         lora.digipeatAlias              = data["loraConfig"]["digipeatAlias"] | "WIDE1-1";
         if (!data["loraConfig"].containsKey("txFormat")) needsRewrite = true;
         lora.txFormat                   = data["loraConfig"]["txFormat"] | 0;
-        if (lora.txFormat < 0 || lora.txFormat > 3) lora.txFormat = 0;
+        if (lora.txFormat != 0 && lora.txFormat != 3) lora.txFormat = 0;   // 1 and 2 no longer exist: an old saved value falls back to text
         if (!data["loraConfig"].containsKey("compressTx")) needsRewrite = true;
         lora.compressTx                 = data["loraConfig"]["compressTx"] | false;
         if (!data["loraConfig"].containsKey("compressFullEvery")) needsRewrite = true;

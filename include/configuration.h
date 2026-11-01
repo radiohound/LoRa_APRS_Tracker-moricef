@@ -130,7 +130,7 @@ public:
     bool    sendInfo;
     bool    repeaterMode;
     String  digipeatAlias;      // alias matched when repeating (fill-in = WIDE1-1)
-    int     txFormat;           // 0 text, 1 native, 2 both (text then native), 3 hybrid (native frame with PPM-coded content, spec 11)
+    int     txFormat;           // 0 text, 3 hybrid (native frame with PPM-coded content, spec 11). other values read as 0
     bool    compressTx;         // experimental: send order-3 compressed frames (receivers always decode them)
     int     compressFullEvery;  // with compressTx: a full compressed frame at least every Nth packet; the rest are primed (1 = never primed)
 };
