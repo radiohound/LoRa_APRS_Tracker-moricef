@@ -462,7 +462,7 @@ namespace LoRa_Utils {
     // frame would have given; a text frame keeps the behaviour of
     // readData(String&), which stops at the first zero byte.
     static String payloadToText(uint8_t* data, size_t length) {
-        if (HYBRID_FRAME::isHybrid(data, length)) {                     // native frame, kind 2 or 3: PPM-coded content (spec 11)
+        if (HYBRID_FRAME::isHybrid(data, length)) {                     // native frame, any kind: raw or PPM-coded content (spec 11)
             std::string tnc2;
             std::vector<NATIVE_APRS::RxtTuple> rxt;
             if (!HYBRID_FRAME::decode(data, length, tnc2, rxt)) {

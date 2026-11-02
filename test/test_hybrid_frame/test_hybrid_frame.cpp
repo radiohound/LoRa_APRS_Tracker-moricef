@@ -49,7 +49,7 @@ TEST(HybridFrame, RxtTuplesBecomeRxtCharactersAndBack) {
 
 TEST(HybridFrame, FirstRelayTupleIsRssi50AsCharacterS) {
     // worked example of spec 11, after the first relay: tuple 50 20 45 10 on path element 0
-    std::vector<uint8_t> frame = hexBytes("3cff022b895994a62c00a159a392e8120001b5f81655eb2f3e011bd55e93af550a8e18e207495b32142d0a81");
+    std::vector<uint8_t> frame = hexBytes("3cff022b895994a62c00a159a392e8120001b5f81655eb2f3e101bb1a693af550a8e18e207495b32142d0a81");
     std::string tnc2;
     std::vector<NATIVE_APRS::RxtTuple> rxt;
     ASSERT_TRUE(HYBRID_FRAME::decode(frame.data(), frame.size(), tnc2, rxt));
@@ -62,14 +62,14 @@ TEST(HybridFrame, FirstRelayTupleIsRssi50AsCharacterS) {
     EXPECT_EQ(rxt[0].tuple[3], (char)(10 + 33));
 }
 
-TEST(HybridFrame, IsHybridOnlyForKinds2And3) {
+TEST(HybridFrame, IsHybridForEveryKindOfTheNativeFrame) {
     uint8_t k2[6] = {0x3C, 0xFF, 0x02, 0x02, 0, 0};
     uint8_t k3[6] = {0x3C, 0xFF, 0x02, 0x03, 0, 0};
     uint8_t k1[6] = {0x3C, 0xFF, 0x02, 0x01, 0, 0};
     uint8_t text[6] = {0x3C, 0xFF, 0x01, 0x02, 0, 0};
     EXPECT_TRUE(HYBRID_FRAME::isHybrid(k2, 6));
     EXPECT_TRUE(HYBRID_FRAME::isHybrid(k3, 6));
-    EXPECT_FALSE(HYBRID_FRAME::isHybrid(k1, 6));
+    EXPECT_TRUE(HYBRID_FRAME::isHybrid(k1, 6));        // kinds 0 and 1 are the raw form
     EXPECT_FALSE(HYBRID_FRAME::isHybrid(text, 6));
     EXPECT_FALSE(HYBRID_FRAME::isHybrid(k2, 3));
 }
