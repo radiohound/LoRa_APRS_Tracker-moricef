@@ -225,15 +225,23 @@ namespace WIFI_Utils {
         }
     }
 
+    static void apEvent(arduino_event_id_t e, arduino_event_info_t info);
+    static void logApHeap(const char* when) {
+        ESP_LOGI(TAG, "%s: internal heap free %u B, largest free block %u B", when, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
+
     void startBlockingWebConfig() {
         String apName = "LoRa-Tracker-AP";
 
         displayShow(" LoRa APRS", "    ** WEB-CONF **", "", "WiFiAP: " + apName, "IP    : 192.168.4.1", "", 0);
         ESP_LOGW(TAG, "WebConfiguration Started!");
 
-        WiFi.mode(WIFI_MODE_NULL);
+        // Straight into access point mode, as in startAPModeNonBlocking(): the off-and-on sequence (WIFI_MODE_NULL, then WIFI_AP) left the access point
+        // of this branch on the T-Deck Plus unjoinable (see docs/HYBRID-TDECK.md).
+        WiFi.onEvent(apEvent);
         WiFi.mode(WIFI_AP);
         WiFi.softAP(apName.c_str(), Config.wifiAutoAP.password);
+        logApHeap("Web-Conf (blocking) started");
 
         WEB_Utils::setup();
 
@@ -352,11 +360,22 @@ namespace WIFI_Utils {
 
     // Non-blocking AP mode for LVGL UI
     // Web-Conf Mode: log what happens at the access point, so a failed join leaves a trace
+    static unsigned long apFirstProbeMs = 0, apLastJoinMs = 0, apLastHintMs = 0;
     static void apEvent(arduino_event_id_t e, arduino_event_info_t info) {
         const uint8_t* m = nullptr;
         switch (e) {
-            case ARDUINO_EVENT_WIFI_AP_STACONNECTED:    m = info.wifi_ap_staconnected.mac;
-                ESP_LOGI(TAG, "AP station joined %02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]); break;
+            case ARDUINO_EVENT_WIFI_AP_PROBEREQRECVED: {
+                // A probe is a phone looking at the network list, not a join attempt, so this only says what the access point has seen.
+                unsigned long now = millis();
+                if (apFirstProbeMs == 0) apFirstProbeMs = now;
+                if (apLastJoinMs < apFirstProbeMs && now - apFirstProbeMs > 20000 && now - apLastHintMs > 60000) {
+                    apLastHintMs = now;
+                    ESP_LOGW(TAG, "AP: stations have been probing for %lu s but none has joined. Normal while someone only looks at the list. If a join is being tried and the phone says wrong password, a failed handshake is possible: reboot and try again.", (now - apFirstProbeMs) / 1000);
+                    logApHeap("AP");
+                }
+                break; }
+            case ARDUINO_EVENT_WIFI_AP_STACONNECTED:    m = info.wifi_ap_staconnected.mac; apLastJoinMs = millis();
+                ESP_LOGI(TAG, "AP station joined %02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]); logApHeap("AP"); break;
             case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: m = info.wifi_ap_stadisconnected.mac;
                 ESP_LOGI(TAG, "AP station left %02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]); break;
             case ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED:   ESP_LOGI(TAG, "AP station got an IP address"); break;
@@ -380,6 +399,7 @@ namespace WIFI_Utils {
         bool success = WiFi.softAP(apName.c_str(), Config.wifiAutoAP.password);
         if (success) {
             ESP_LOGI(TAG, "AP Started - IP: %s, CPU %d MHz, password length %u", WiFi.softAPIP().toString().c_str(), (int)getCpuFrequencyMhz(), (unsigned)Config.wifiAutoAP.password.length());
+            logApHeap("AP started");
             WEB_Utils::setup();
             WiFiConnected = false;
             WiFiStationMode = false;

@@ -34,18 +34,25 @@ LACF, the LoRa APRS Compact Frame (called the hybrid frame in the code and on th
 
 ## Web-Conf Mode and the WiFi access point (a fix in this branch)
 
-In the base code, Web-Conf Mode started its access point with `WiFi.disconnect(true)`, `WiFi.mode(WIFI_MODE_NULL)` and then `WiFi.mode(WIFI_AP)`. On the T-Deck Plus (ESP32-S3) the network `LoRa-Tracker-AP` then appeared in the list and answered probe requests, but no phone or Mac could ever join it: no join event was logged, and the phones reported a wrong password.
+In this branch, Web-Conf Mode started its access point the way the base code does: `WiFi.disconnect(true)`, `WiFi.mode(WIFI_MODE_NULL)` and then `WiFi.mode(WIFI_AP)`. On the T-Deck Plus (ESP32-S3) the network `LoRa-Tracker-AP` then appeared in the list and answered probe requests, but no phone or Mac could join it: no join event was logged, and the phones reported a wrong password.
 
-It was found by elimination on 1 November 2026, all with the same password and the same Arduino core (2.0.9):
+**This is not a bug in the base code.** The unmodified base firmware (`moricef/LoRa_APRS_Tracker`, branch `devel`, commit `83dfb4a`), which uses the same three-call sequence, was built and flashed to the same T-Deck Plus on 2 November 2026, and a phone joined its access point at once. So the failure belongs to this branch, and nothing should be reported to the base project.
+
+The elimination tests, all with the same password and the same Arduino core (2.0.9):
 
 | Test | Result |
 |---|---|
+| Unmodified base firmware (`devel` 83dfb4a), three-call sequence, same T-Deck Plus (2 November) | joined at once |
 | Bare access point sketch on a LoRa32, newer and older Arduino core | joined at once |
 | The same sketch on the T-Deck itself | joined at once |
-| Tracker with the CPU at 240 MHz, then also with 17 KB of memory given back | still no join |
-| Tracker with a plain `WiFi.mode(WIFI_AP)` and Bluetooth left alone | joined at once, repeatedly |
-| Tracker with a plain `WiFi.mode(WIFI_AP)` and the original Bluetooth shutdown (`btStop()`) | joined at once, repeatedly |
+| This branch with the CPU at 240 MHz, then also with 17 KB of memory given back | still no join |
+| This branch with a plain `WiFi.mode(WIFI_AP)` and Bluetooth left alone | joined at once, repeatedly |
+| This branch with a plain `WiFi.mode(WIFI_AP)` and the original Bluetooth shutdown (`btStop()`) | joined at once, repeatedly |
 
-So the cause is the off-and-on mode sequence, and the fix is the plain call (in `startAPModeNonBlocking()`). Not shown to be needed: the 240 MHz CPU, which is kept while Web-Conf Mode is open. Also done in this branch: the 16 KB worker task of the LACF code is released when Web-Conf Mode opens (free internal memory was down to 25 KB; with two phones on the web page it fell to 9.5 KB at its lowest, and the largest free block shrank from 32 KB to 9.7 KB after use, which is why a second visit in the same session may need a reboot first).
+The fix is the plain call, in both places where the access point is started (`startAPModeNonBlocking()` and `startBlockingWebConfig()`). Not shown to be needed: the 240 MHz CPU, which is kept while Web-Conf Mode is open.
+
+**Why only this branch is not known.** The likely reason is memory. This branch has about 15 KB more fixed RAM than the base (PlatformIO reports 228,848 bytes against 213,216), from the compression and LACF code, and in Web-Conf Mode free internal memory was down to 25 KB; with two phones on the web page it fell to 9.5 KB at its lowest, and the largest free block shrank from 32 KB to 9.7 KB after use (so a second visit in the same session may need a reboot first). Switching the radio off and on needs fresh memory, and so does a phone's join handshake. But giving 17 KB back did not fix the three-call sequence, so the total alone does not explain it. The shape of the free memory, or something else this branch adds, may. It is not proved.
+
+Also done in this branch: the 16 KB worker task of the LACF code is released when Web-Conf Mode opens, and the access point now logs what it sees: the free internal memory and the largest free block when it starts and at each join, every station that joins or leaves, and a warning when stations have been probing for 20 seconds without any join. A phone that says "wrong password" can be reporting a join that did not complete; the access point logged no event at all for those failed joins, so the device cannot tell them apart from a wrong password.
 
 The setting is on the web page under **Digipeater**, last row, **Tx frame format**. It does not turn on digipeating.
