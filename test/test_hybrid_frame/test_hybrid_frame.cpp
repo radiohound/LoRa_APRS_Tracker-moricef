@@ -1,6 +1,10 @@
 #include "hybrid_frame.h"
 #include "vectors.h"
+#include "relay_vectors.h"
+#include "rxt_scale.h"
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <cstdio>
 
 static std::vector<uint8_t> hexBytes(const char* h) {
     std::vector<uint8_t> b;
@@ -106,4 +110,56 @@ TEST(HybridFrame, RxtOutOfRangeIsLeftOutNotSent) {
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+// The relay (spec 11, "Relay"): the received frame with the new path, the earlier hops' tuples kept, the relay's own tuple added.
+TEST(HybridFrame, RelayMatchesTheReferenceRelayVectors) {
+    for (const RelayVec& v : RELAY_VECTORS) {
+        std::vector<uint8_t> rx = hexBytes(v.rx), want = hexBytes(v.relayed), got;
+        std::string back;
+        std::vector<NATIVE_APRS::RxtTuple> old;
+        ASSERT_TRUE(HYBRID_FRAME::decode(rx.data(), rx.size(), back, old)) << v.rx;
+        int k = (int)old.size();
+        char call[16];
+        std::snprintf(call, sizeof call, "N0RLY-%d", k + 1);
+        const uint8_t tuple[4] = { (uint8_t)(50 + k), (uint8_t)(20 + k), (uint8_t)(45 + k), (uint8_t)(10 + k) };
+        int off = -2;
+        ASSERT_TRUE(HYBRID_FRAME::relay(rx.data(), rx.size(), hexText(v.tnc2), call, tuple, got, &off)) << v.rx;
+        EXPECT_EQ(got, want);
+        if (off >= 0) {
+            ASSERT_EQ(off + 5, (int)got.size());
+            EXPECT_TRUE(std::equal(tuple, tuple + 4, got.begin() + off));
+        } else {
+            EXPECT_FALSE(got.size() > 4 && (got[3] & 0x08) && std::equal(tuple, tuple + 4, got.end() - 5));
+        }
+        std::string text;
+        std::vector<NATIVE_APRS::RxtTuple> now;
+        ASSERT_TRUE(HYBRID_FRAME::decode(got.data(), got.size(), text, now));
+        EXPECT_EQ(text, hexText(v.tnc2));
+        EXPECT_GE(now.size(), old.size());
+    }
+}
+
+TEST(HybridFrame, RelayRefusesWhatItMustNotForward) {
+    std::vector<uint8_t> rx = hexBytes(RELAY_VECTORS[0].rx), out;
+    const uint8_t tuple[4] = { 50, 20, 45, 10 };
+    std::string tnc2 = hexText(RELAY_VECTORS[0].tnc2);
+    EXPECT_FALSE(HYBRID_FRAME::relay(rx.data(), rx.size(), tnc2, "N0OTHR-9", tuple, out, nullptr));      // the new path has no element of this relay
+    std::string other = tnc2;
+    other[other.size() - 1] ^= 1;                                                                           // only the path may differ
+    EXPECT_FALSE(HYBRID_FRAME::relay(rx.data(), rx.size(), other, "N0RLY-1", tuple, out, nullptr));
+}
+
+TEST(HybridFrame, RxtScalesMatchTheSpecExampleTuple) {
+    // 32 14 2D 0A: RSSI -80 dBm, SNR -14 dB, frequency offset 0 Hz, ten steps of time to hop (SF12, 125 kHz)
+    EXPECT_EQ(RXT_Scale::rssi(-80), 0x32);
+    EXPECT_EQ(RXT_Scale::snr(-14.0f), 0x14);
+    EXPECT_EQ(RXT_Scale::frequencyOffset(0), 0x2D);
+    EXPECT_EQ(RXT_Scale::timeToHop(380, RXT_Scale::tthScale(12, 125000)), 0x0A);
+    EXPECT_EQ(RXT_Scale::rssi(-200), 0);
+    EXPECT_EQ(RXT_Scale::rssi(0), 89);
+    EXPECT_EQ(RXT_Scale::snr(40.0f), 88);
+    EXPECT_EQ(RXT_Scale::frequencyOffset(-9999), 0);
+    EXPECT_EQ(RXT_Scale::frequencyOffset(9999), 89);
+    EXPECT_EQ(RXT_Scale::timeToHop(100000000UL, 327.68f), 89);
 }

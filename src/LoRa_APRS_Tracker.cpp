@@ -423,7 +423,7 @@ void loop() {
             if (digipeatedPacket != "X") {
                 ESP_LOGI(TAG, "Digipeating: %s", digipeatedPacket.c_str());
                 delay(random(100, 500)); // Random delay to avoid collisions
-                LoRa_Utils::sendNewPacket(digipeatedPacket);
+                LoRa_Utils::sendRelayedPacket(digipeatedPacket, currentBeacon->callsign, packet.rssi, packet.snr, packet.freqError);
             } else {
                 ESP_LOGW(TAG, "Packet won't be repeated (Missing WIDEn-N)");
             }

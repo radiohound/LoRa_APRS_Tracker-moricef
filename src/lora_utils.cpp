@@ -30,6 +30,7 @@
 #include "lora_utils.h"
 #include "native_aprs.h"
 #include "hybrid_frame.h"
+#include "rxt_scale.h"
 #include "display.h"
 #include "station_utils.h"
 #include "storage_utils.h"
@@ -69,6 +70,7 @@ static inline void loraSpiEnd() {
 }
 
 bool operationDone   = true;
+static volatile uint32_t rxDoneMs = 0;      // millis() at the last interrupt of the radio (set in setFlag)
 bool transmitFlag    = true;
 bool loraInitOk      = false;  // Set true only after successful radio.begin()
 
@@ -111,6 +113,10 @@ namespace LoRa_Utils {
     // decoded in payloadToText().
     static String payloadToText(uint8_t* data, size_t length);   // defined below (native and hybrid frames)
 
+    // The last LACF frame received, as bytes, and when it had been received completely: a digipeater builds the frame it relays from these (sendRelayedPacket).
+    static std::vector<uint8_t> lastRxFrame;
+    static uint32_t             lastRxFrameDoneMs = 0;
+
     static int16_t readFrame(String& packet) {
         size_t len = radio.getPacketLength();
         if (len > 255) len = 255;
@@ -121,6 +127,12 @@ namespace LoRa_Utils {
             // plain text frame or a native frame (3C FF 02): the existing decoder
             if (state == RADIOLIB_ERR_NONE) packet = payloadToText(buf, len);
             else packet = String(reinterpret_cast<char*>(buf));
+            if (state == RADIOLIB_ERR_NONE && !packet.isEmpty() && HYBRID_FRAME::isHybrid(buf, len)) {
+                lastRxFrame.assign(buf, buf + len);
+                lastRxFrameDoneMs = rxDoneMs;
+            } else {
+                lastRxFrame.clear();
+            }
         }
         return state;
     }
@@ -131,6 +143,7 @@ namespace LoRa_Utils {
     }
 
     void setFlag(void) {
+        rxDoneMs = millis();                // when the radio last finished a reception (or a transmission): the start of the time to hop of a relayed frame
         operationDone = true;
     }
 
@@ -491,7 +504,7 @@ namespace LoRa_Utils {
         return frame;
     }
 
-    void sendNewPacket(const String& newPacket) {
+    void sendNewPacket(const String& newPacket, const RelayFrame* relay) {
         if (!loraInitOk) return;
         ESP_LOGI(TAG, "Tx ---> %s", newPacket.c_str());
         /*logger.log(logging::LoggerLevel::LOGGER_LEVEL_WARN, "LoRa","Send data: %s", newPacket.c_str());
@@ -516,14 +529,27 @@ namespace LoRa_Utils {
         fmt = HYBRID_FORCE_TX;   // test builds only (-DHYBRID_FORCE_TX=3): hybrid frames without the settings page
 #endif
         std::vector<uint8_t> hybrid;
+        bool relayed = false;
         if (fmt == 3) {
-            hybrid = hybridFrame(newPacket);
+            if (relay != nullptr && !relay->frame.empty()) { hybrid = relay->frame; relayed = true; }     // a relayed LACF frame (sendRelayedPacket)
+            else hybrid = hybridFrame(newPacket);
             if (hybrid.empty()) ESP_LOGW(TAG, "Hybrid: sent as text, packet cannot be encoded");
         }
         int state;
         if (!hybrid.empty()) {
+            unsigned long hopMs = 0;
+            if (relayed && relay->ownOffset >= 0 && (size_t)relay->ownOffset + 4 <= hybrid.size()) {
+                // Time to hop: from the end of the reception to the end of this transmission, queue, delays and time on air included. Computed here, just before the frame goes out.
+                hopMs = (unsigned long)(millis() - relay->rxDoneMs) + (unsigned long)(radio.getTimeOnAir(hybrid.size()) / 1000);
+                hybrid[relay->ownOffset + 3] = RXT_Scale::timeToHop(hopMs, RXT_Scale::tthScale(currentLoRaType->spreadingFactor, currentLoRaType->signalBandwidth));
+            }
             state = radio.transmit(hybrid.data(), hybrid.size());
-            ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes)", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3));
+            if (relayed) {
+                ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes), relayed%s", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3),
+                         relay->ownOffset >= 0 ? (", RXT tuple added, time to hop " + String(hopMs) + " ms").c_str() : ", no RXT tuple of its own");
+            } else {
+                ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes)", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3));
+            }
         } else {
             state = transmitText(newPacket);   // plain text frame
         }
@@ -543,6 +569,31 @@ namespace LoRa_Utils {
             delay(Config.ptt.postDelay);
             digitalWrite(Config.ptt.io_pin, Config.ptt.reverse ? HIGH : LOW);
         }
+    }
+
+    void sendRelayedPacket(const String& newPacket, const String& ownCall, int rssi, float snr, int freqError) {
+        int fmt = Config.lora.txFormat;
+#ifdef HYBRID_FORCE_TX
+        fmt = HYBRID_FORCE_TX;
+#endif
+        if (fmt == 3 && !lastRxFrame.empty()) {
+            std::string tnc2;
+            std::vector<NATIVE_APRS::RxtTuple> trailer;
+            // the packet without its RXT trailer: the earlier hops' tuples are taken from the received frame, not from the text
+            if (NATIVE_APRS::fromText(std::string(newPacket.c_str(), newPacket.length()), "", tnc2, trailer)) {
+                const uint8_t tuple[4] = { RXT_Scale::rssi((float)rssi), RXT_Scale::snr(snr), RXT_Scale::frequencyOffset(freqError), 0 };
+                RelayFrame relay;
+                int offset = -1;
+                if (HYBRID_FRAME::relay(lastRxFrame.data(), lastRxFrame.size(), tnc2, std::string(ownCall.c_str(), ownCall.length()), tuple, relay.frame, &offset)) {
+                    relay.ownOffset = offset;
+                    relay.rxDoneMs  = lastRxFrameDoneMs;
+                    sendNewPacket(newPacket, &relay);
+                    return;
+                }
+                ESP_LOGW(TAG, "LACF relay: the frame cannot be relayed as LACF, sent the usual way");
+            }
+        }
+        sendNewPacket(newPacket);
     }
 
     void wakeRadio() {

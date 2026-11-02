@@ -1388,7 +1388,7 @@ namespace MSG_Utils {
                             ESP_LOGW(TAG, "Packet won't be Repeated (Missing WIDEn-N)");
                         } else {
                             delay(500);
-                            LoRa_Utils::sendNewPacket(digipeatedPacket);
+                            LoRa_Utils::sendRelayedPacket(digipeatedPacket, currentBeacon->callsign, packet.rssi, packet.snr, packet.freqError);
                         }
                     }
                     lastHeardTracker = lastReceivedPacket.sender;

@@ -20,6 +20,7 @@
 #define LORA_UTILS_H_
 
 #include <Arduino.h>
+#include "relay_frame.h"
 
 struct ReceivedLoRaPacket {
     String  text;
@@ -55,7 +56,10 @@ namespace LoRa_Utils {
     DataRateConfig getDataRateConfig(int dataRate);
     int getNextDataRate(int currentDataRate);
     void setup();
-    void sendNewPacket(const String& newPacket);
+    void sendNewPacket(const String& newPacket, const RelayFrame* relay = nullptr);   // relay: the LACF frame to send instead of newPacket (a relayed LACF frame)
+    // A packet the digipeater has just rewritten (ownCall* in its path), from the frame received last: sent as an LACF frame that keeps the earlier hops' tuples and carries the relay's own
+    // (spec 11, "Relay"), with rssi, snr and freqError of that reception. When it cannot be relayed that way, or the Tx frame format is not hybrid, it is sent as sendNewPacket would.
+    void sendRelayedPacket(const String& newPacket, const String& ownCall, int rssi, float snr, int freqError);
     void wakeRadio();
     ReceivedLoRaPacket receiveFromSleep();
     ReceivedLoRaPacket receivePacket();
