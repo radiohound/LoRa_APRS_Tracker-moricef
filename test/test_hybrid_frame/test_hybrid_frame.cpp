@@ -70,6 +70,13 @@ TEST(HybridFrame, IsHybridOnlyForKinds2And3) {
     EXPECT_FALSE(HYBRID_FRAME::isHybrid(k2, 3));
 }
 
+TEST(HybridFrame, DoesNotEncodeWhatTheSpecSaysIsNotEncodable) {
+    for (const char* h : HB_NOENC) {
+        std::vector<uint8_t> frame;
+        EXPECT_FALSE(HYBRID_FRAME::encode(hexText(h), {}, frame)) << h;
+    }
+}
+
 TEST(HybridFrame, DropsTheRejectionVectors) {
     for (const char* h : HB_REJECT) {
         std::vector<uint8_t> frame = hexBytes(h);
