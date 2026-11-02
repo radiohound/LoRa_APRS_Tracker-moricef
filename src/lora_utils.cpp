@@ -33,8 +33,6 @@
 #include "display.h"
 #include "station_utils.h"
 #include "storage_utils.h"
-#include "AprsCompress.h"
-#include "AprsCompressStore.h"
 #ifdef USE_LVGL_UI
 #include "lvgl_ui.h"
 #endif
@@ -108,14 +106,9 @@ int pendingDataRate = -1;
 
 namespace LoRa_Utils {
 
-    // Experimental order-3 compression (APRS-PPM), see tools/aprs_compress in the LoRa_APRS_iGate fork.
-    // A compressed frame is expanded back to "\x3c\xff\x01" + text as it is read, so everything after this
-    // sees the same packets as before.  Reads into a byte buffer because RadioLib's String overload stops at
-    // the first NUL byte.  Two small stores of "last packet per station" support primed frames: rxStore holds
-    // what we have received (the reference for decoding), txStore what we have sent (the reference for encoding).
-    static AprsCompress::PacketStore rxStore;
-    static AprsCompress::PacketStore txStore;
-
+    // Reads into a byte buffer because RadioLib's String overload stops at the first NUL byte.  The earlier
+    // whole-text compressed formats (3C FF 81 / 3C FF C1) are no longer read or sent; LACF (3C FF 02) is
+    // decoded in payloadToText().
     static String payloadToText(uint8_t* data, size_t length);   // defined below (native and hybrid frames)
 
     static int16_t readFrame(String& packet) {
@@ -124,70 +117,16 @@ namespace LoRa_Utils {
         uint8_t buf[256];
         int16_t state = radio.readData(buf, len);
         if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_ERR_CRC_MISMATCH || state == RADIOLIB_ERR_LORA_HEADER_DAMAGED) {
-            if (state == RADIOLIB_ERR_NONE && AprsCompress::isCompressedHeader(buf, len)) {
-                uint8_t text[AprsCompress::MAX_TEXT + 1];
-                size_t n = AprsCompress::decodeFrame(buf, len, text, AprsCompress::MAX_TEXT);
-                if (n == 0) return RADIOLIB_ERR_UNKNOWN;
-                text[n] = 0;
-                packet = "\x3c\xff\x01" + String(reinterpret_cast<char*>(text));
-                rxStore.put(text, n, true);
-                ESP_LOGI(TAG, "Compressed frame: %u B on air, %u B expanded", (unsigned)len, (unsigned)(n + 3));
-            } else if (state == RADIOLIB_ERR_NONE && AprsCompress::isPrimedHeader(buf, len)) {
-                uint8_t id = 0, check = 0;
-                AprsCompress::primedHeader(buf, len, id, check);
-                AprsCompress::PacketStore::Entry* ref = rxStore.findForFrame(id, check);
-                if (ref == nullptr) {
-                    ESP_LOGI(TAG, "Primed frame dropped: no matching reference (station id %u, check %u)", id, check);
-                    return RADIOLIB_ERR_UNKNOWN;
-                }
-                uint8_t text[AprsCompress::MAX_TEXT + 1];
-                size_t n = AprsCompress::decodePrimed(ref->text, ref->len, buf, len, text, AprsCompress::MAX_TEXT);
-                if (n == 0) {
-                    ESP_LOGI(TAG, "Primed frame dropped: did not decode");
-                    return RADIOLIB_ERR_UNKNOWN;
-                }
-                text[n] = 0;
-                packet = "\x3c\xff\x01" + String(reinterpret_cast<char*>(text));
-                rxStore.put(text, n, false);
-                ESP_LOGI(TAG, "Primed frame: %u B on air, %u B expanded", (unsigned)len, (unsigned)(n + 3));
-            } else {
-                buf[len] = 0;
-                if (state == RADIOLIB_ERR_NONE && len > 4 && buf[0] == 0x3C && buf[1] == 0xFF && buf[2] == 0x01)
-                    rxStore.put(buf + 3, len - 3, true);
-                // plain text frame or a native frame (3C FF 02): the existing decoder
-                if (state == RADIOLIB_ERR_NONE) packet = payloadToText(buf, len);
-                else packet = String(reinterpret_cast<char*>(buf));
-            }
+            buf[len] = 0;
+            // plain text frame or a native frame (3C FF 02): the existing decoder
+            if (state == RADIOLIB_ERR_NONE) packet = payloadToText(buf, len);
+            else packet = String(reinterpret_cast<char*>(buf));
         }
         return state;
     }
 
-    // Sends one packet.  When compression is on it sends the smallest of: a primed frame (only if we sent an
-    // earlier packet from the same source and fewer than compressFullEvery - 1 primed frames have gone since
-    // the last full one), a full compressed frame, or the plain frame.
+    // Sends one packet as a plain text frame.
     static int16_t transmitText(const String& text) {
-        const uint8_t* t = reinterpret_cast<const uint8_t*>(text.c_str());
-        size_t tl = text.length();
-        if (Config.lora.compressTx && tl > 0 && tl <= AprsCompress::MAX_TEXT) {
-            uint8_t full[256], primed[256];
-            size_t nf = AprsCompress::encodeFrame(t, tl, full, sizeof(full));
-            size_t np = 0;
-            int fullEvery = Config.lora.compressFullEvery;
-            AprsCompress::PacketStore::Entry* ref = txStore.findBySource(t, tl);
-            if (ref != nullptr && fullEvery > 1 && (int)ref->sinceFull + 1 < fullEvery)
-                np = AprsCompress::encodePrimed(ref->text, ref->len, t, tl, primed, sizeof(primed));
-            if (np > 0 && (nf == 0 || np < nf)) {
-                ESP_LOGI(TAG, "Primed frame: %u B instead of %u B", (unsigned)np, (unsigned)(tl + 3));
-                txStore.put(t, tl, false);
-                return radio.transmit(primed, np);
-            }
-            txStore.put(t, tl, true);
-            if (nf > 0) {
-                ESP_LOGI(TAG, "Compressed frame: %u B instead of %u B", (unsigned)nf, (unsigned)(tl + 3));
-                return radio.transmit(full, nf);
-            }
-        }
-        txStore.put(t, tl, true);               // receivers store plain packets too, so this stays in step
         return radio.transmit("\x3c\xff\x01" + text);
     }
 
@@ -586,7 +525,7 @@ namespace LoRa_Utils {
             state = radio.transmit(hybrid.data(), hybrid.size());
             ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes)", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3));
         } else {
-            state = transmitText(newPacket);   // plain text frame, or its compressed form when compressTx is on
+            state = transmitText(newPacket);   // plain text frame
         }
         transmitFlag = true;
         loraSpiEnd();
