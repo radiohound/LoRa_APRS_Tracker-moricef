@@ -16,7 +16,7 @@ LACF, the LoRa APRS Compact Frame (called the hybrid frame in the code and on th
 
 ## Cost
 
-* Flash: about 181 KB (`libHybridFrame.a`: two model tables of 82 and 84 KB, the frame code 12 KB). The T-Deck Plus 433 build uses 74.0% of the 3 MB application partition (2,327,385 bytes) since the earlier whole-text codec was removed, and the relay adds about 6 KB.
+* Flash: about 181 KB (`libHybridFrame.a`: two model tables of 82 and 84 KB, the frame code 12 KB). The T-Deck Plus 433 build uses 74.0% of the 3 MB application partition (2,327,785 bytes) since the earlier whole-text codec was removed, and the relay adds about 6 KB.
 * RAM: 214,176 bytes of fixed RAM in all, 960 bytes more than the unmodified base (213,216 bytes). The LACF code itself needs about 3 KB of it. The frame code keeps working buffers on the stack (about 10 KB at the deepest, measured on an ESP32), more than the 8 KB loop task has, so on the board it runs in a
   task of its own (16 KB stack, created at the first call, one call at a time). A tracker that never receives a hybrid frame and keeps `txFormat` at 0 never creates it.
 * Time (LoRa32, 240 MHz, from the spec's benchmark): encode 4.0 ms median / 22 ms 95th percentile; receive and verify 1.9 / 11 ms; about 9% of the frame's own SF7 airtime at worst.
