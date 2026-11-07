@@ -11,7 +11,14 @@ size_t hbc_payload_encode(const uint8_t *text, size_t tl, uint8_t *out, size_t c
 int    hbc_payload_check(const uint8_t *pay, size_t n, size_t L, uint8_t *text);
 
 #define MODEL_VERSION 0                     /* model version 0: the two PPM tables above (the destination list is not versioned: fixed, append-only codes) */
-#define VBYTE(has_cap) ((uint8_t)(((has_cap) ? 0x80 : 0) | MODEL_VERSION))   /* 3.0.0-dev.1 (proposal): V = c ss mmmmm, c = three capability bytes follow V, ss two spare bits (0), mmmmm the model version */
+#ifdef LACF_TEST_MODEL1     /* TEST BUILD ONLY (-DLACF_TEST_MODEL1): send V with model 1 (the tables of model 0 under another number) and decode model 1 as well, to try the relay without the model on the air */
+#define SEND_MODEL 1
+#define ALSO_MODEL1 1
+#else
+#define SEND_MODEL MODEL_VERSION
+#define ALSO_MODEL1 0
+#endif
+#define VBYTE(has_cap) ((uint8_t)(((has_cap) ? 0x80 : 0) | SEND_MODEL))   /* 3.0.0-dev.1 (proposal): V = c ss mmmmm, c = three capability bytes follow V, ss two spare bits (0), mmmmm the model version */
 #define MAX_LIST 126                        /* destination codes 0 to 125; 126 is reserved and 127 is the escape */
 static char list[MAX_LIST][12]; static int nlist = 0;
 
@@ -485,7 +492,7 @@ static int decode_impl(const uint8_t *fr, size_t n, char *tnc2, size_t cap, hb3_
         if (info) { info->cc = 1; info->payload_len = 0; }
     } else {
         size_t pn = bn; int ok;
-        if (ver != MODEL_VERSION) return HB3_ERR_VERSION;                  /* LACF content needs the model */
+        if (ver != MODEL_VERSION && !(ALSO_MODEL1 && ver == 1)) return HB3_ERR_VERSION;                  /* LACF content needs the model */
         ok = (kind == 3) ? hbc_payload_check(bodyp, pn, L, (uint8_t *)comment) : hbi_payload_check(bodyp, pn, L, (uint8_t *)text);
         if (!ok) return HB3_ERR_PAYLOAD;
         if (memchr(kind == 3 ? comment : text, 0, L)) return HB3_ERR_CONTENT;     /* strict: no NUL in a TNC2 packet */
