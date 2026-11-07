@@ -19,7 +19,8 @@ namespace HYBRID_FRAME {
     bool encode(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out);
 
     // The same for a 3C FF 03 frame (3.0.0-dev.1, no capability bytes). Tuple characters are '!'..'z' only for now.
-    bool encode3(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out);
+    // cap, if given, points to the four capability bytes (V bit 7 is then set and they follow V).
+    bool encode3(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out, const uint8_t* cap = nullptr);
 
     // The front of a 3C FF 03 frame whatever its model: the structure and the CRC (over the bytes as sent) are checked, the content is not decoded. frontText is
     // "SRC>DST,PATH:" (DST is "?" when its code is not assigned), so a digipeater can apply its own path rule to a frame it cannot decode; relay() then forwards it
@@ -39,7 +40,8 @@ namespace HYBRID_FRAME {
     void shutdown();
 
     // Hybrid frame to TNC2 and RXT tuples. False when the receiver rules of the spec drop the frame.
-    bool decode(const uint8_t* data, size_t size, std::string& tnc2, std::vector<NATIVE_APRS::RxtTuple>& rxt);
+    // capOut (four bytes) and hasCap, if given, get the capability bytes of a 3C FF 03 frame that carries them.
+    bool decode(const uint8_t* data, size_t size, std::string& tnc2, std::vector<NATIVE_APRS::RxtTuple>& rxt, uint8_t* capOut = nullptr, bool* hasCap = nullptr);
 
 }
 

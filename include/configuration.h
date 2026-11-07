@@ -130,7 +130,7 @@ public:
     bool    sendInfo;
     bool    repeaterMode;
     String  digipeatAlias;      // alias matched when repeating (fill-in = WIDE1-1)
-    int     txFormat;           // 0 text, 3 hybrid (native frame with PPM-coded content, spec 11). other values read as 0
+    int     txFormat;           // 0 text, 3 LACF 2.0.0 (frame type 02, spec 11), 4 LACF 3.0.0-dev.1 (frame type 03, experimental). other values read as 0
     bool    compressTx;         // unused since the earlier whole-text codec was removed; kept so settings files do not change
     int     compressFullEvery;  // unused, as compressTx
 };

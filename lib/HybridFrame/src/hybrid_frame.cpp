@@ -33,6 +33,7 @@ namespace HYBRID_FRAME {
             char* text; size_t textCap;
             hb_info_t info;
             unsigned key;                                            // OP_FRONT: the frame's CRC-16
+            const uint8_t* cap; uint8_t capOut[4]; bool hasCap;      // OP_ENCODE3: the capability bytes to send; OP_DECODE: those the frame carried
             long result;
             const char* own; size_t ownLen; uint8_t ownTuple[4]; int ownOffset;      // OP_RELAY: the relay's callsign, its tuple, and where its tuple ended up
         };
@@ -78,7 +79,7 @@ namespace HYBRID_FRAME {
             static bool listSet = false;
             if (!listSet) { hb_set_list(SET1, SET1_N); hb3_set_list(SET1, SET1_N); listSet = true; }
             if (j.op == OP_ENCODE) j.result = (long)hb_encode(j.tnc2, j.tnc2Len, j.rxt, j.out, j.outCap, &j.info);
-            else if (j.op == OP_ENCODE3) { hb3_info_t i3; j.result = (long)hb3_encode_cap(j.tnc2, j.tnc2Len, j.rxt3, nullptr, j.out, j.outCap, &i3); }
+            else if (j.op == OP_ENCODE3) { hb3_info_t i3; j.result = (long)hb3_encode_cap(j.tnc2, j.tnc2Len, j.rxt3, j.cap, j.out, j.outCap, &i3); }
             else if (j.op == OP_RELAY) j.result = relayRun(j);
             else if (j.op == OP_FRONT) {
                 hb3_info_t i3;
@@ -93,6 +94,7 @@ namespace HYBRID_FRAME {
                 static_assert(sizeof(hb_rxt_t) == sizeof(hb3_rxt_t), "the two RXT blocks have the same layout");
                 j.result = (long)hb3_decode(j.frame, j.frameLen, j.text, j.textCap, &i3);
                 std::memcpy(&j.info.rxt, &i3.rxt, sizeof j.info.rxt); j.info.has_rxt = i3.has_rxt;
+                j.hasCap = i3.has_cap != 0; std::memcpy(j.capOut, i3.cap, 4);
             }
             else j.result = (long)hb_decode(j.frame, j.frameLen, j.text, j.textCap, &j.info);
         }
@@ -183,7 +185,7 @@ namespace HYBRID_FRAME {
         return true;
     }
 
-    bool encode3(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out) {
+    bool encode3(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out, const uint8_t* cap) {
         hb_rxt_t block;
         hb3_rxt_t block3;
         bool useRxt = toBlock(rxt, block);
@@ -191,7 +193,7 @@ namespace HYBRID_FRAME {
         Job j;
         std::memset(&j, 0, sizeof j);
         uint8_t frame[256];
-        j.op = OP_ENCODE3; j.tnc2 = tnc2.data(); j.tnc2Len = tnc2.size(); j.rxt3 = useRxt ? &block3 : nullptr; j.out = frame; j.outCap = sizeof frame;
+        j.op = OP_ENCODE3; j.tnc2 = tnc2.data(); j.tnc2Len = tnc2.size(); j.cap = cap; j.rxt3 = useRxt ? &block3 : nullptr; j.out = frame; j.outCap = sizeof frame;
         if (!call(j) || j.result <= 0 || j.result > 255) return false;
         out.assign(frame, frame + j.result);
         return true;
@@ -224,13 +226,15 @@ namespace HYBRID_FRAME {
         return true;
     }
 
-    bool decode(const uint8_t* data, size_t size, std::string& tnc2, std::vector<NATIVE_APRS::RxtTuple>& rxt) {
+    bool decode(const uint8_t* data, size_t size, std::string& tnc2, std::vector<NATIVE_APRS::RxtTuple>& rxt, uint8_t* capOut, bool* hasCap) {
         Job j;
         std::memset(&j, 0, sizeof j);
         std::vector<char> text(700);
         j.op = OP_DECODE; j.frame = data; j.frameLen = size; j.text = text.data(); j.textCap = text.size();
         if (!call(j) || j.result <= 0) return false;
         tnc2.assign(text.data(), (size_t)j.result);
+        if (hasCap) *hasCap = j.hasCap;
+        if (capOut && j.hasCap) std::memcpy(capOut, j.capOut, 4);
         rxt.clear();
         bool carry = j.info.has_rxt;
         for (int i = 0; carry && i < j.info.rxt.n; i++) for (int q = 0; q < 4; q++) if (j.info.rxt.t[i][q] > 89) carry = false;   // 3.0.0-dev.1: 'not measured' or unknown cannot be written in the text trailer yet, so the trailer is left out

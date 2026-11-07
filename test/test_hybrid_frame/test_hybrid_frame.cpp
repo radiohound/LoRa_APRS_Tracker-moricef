@@ -4,6 +4,11 @@
 #include "vectors3.h"
 #include "relay_vectors3.h"
 #include "passthrough3.h"
+#include "capvectors3.h"
+#include "lacf_capability.h"
+extern "C" {
+#include "hb3.h"
+}
 #include "rxt_scale.h"
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -237,4 +242,111 @@ TEST(HybridFrame, Type03DamagedFrameHasNoFront) {
     std::vector<uint8_t> f02 = hexBytes(HB_VECTORS[0].frame);
     std::string front;
     EXPECT_FALSE(HYBRID_FRAME::front(f02.data(), f02.size(), front));                  // front() is for type 03 only
+}
+
+// ---- capability bytes (3.0.0-dev.1, spec 12): the firmware module, and the wrapper against the reference vectors
+
+TEST(LacfCapability, PackingEqualsTheReferenceAndRoundTrips) {
+    unsigned rng = 12345;
+    auto next = [&](unsigned m) { rng = rng * 1664525u + 1013904223u; return (rng >> 8) % m; };
+    for (int n = 0; n < 5000; n++) {
+        LACF_CAP::Capability c, back;
+        c.role = next(8); c.model = next(32); c.sf = next(8); c.bw = next(4); c.cr = next(4); c.power = next(64); c.preset = next(32);
+        uint8_t b[4], ref[4];
+        LACF_CAP::pack(c, b);
+        int f[7] = { c.role, c.model, c.sf, c.bw, c.cr, c.power, c.preset };
+        ASSERT_TRUE(hb3_cap_pack(f, ref));
+        EXPECT_TRUE(std::equal(b, b + 4, ref));
+        LACF_CAP::parse(b, back);
+        EXPECT_TRUE(back.role == c.role && back.model == c.model && back.sf == c.sf && back.bw == c.bw && back.cr == c.cr && back.power == c.power && back.preset == c.preset);
+        EXPECT_EQ(b[3] & 0x3F, 0);                                                  // the six spare bits are sent as 0
+    }
+}
+
+TEST(LacfCapability, CodesFromTheSettings) {
+    EXPECT_TRUE(LACF_CAP::sfCode(5) == 0 && LACF_CAP::sfCode(6) == 1 && LACF_CAP::sfCode(12) == 7);
+    EXPECT_TRUE(LACF_CAP::bwCode(62500) == 0 && LACF_CAP::bwCode(125000) == 1 && LACF_CAP::bwCode(250000) == 2 && LACF_CAP::bwCode(500000) == 3);
+    EXPECT_TRUE(LACF_CAP::crCode(5) == 0 && LACF_CAP::crCode(8) == 3);
+    EXPECT_TRUE(LACF_CAP::powerCode(10) == 10 && LACF_CAP::powerCode(22) == 22 && LACF_CAP::powerCode(40) == 40 && LACF_CAP::powerCode(-3) == 0 && LACF_CAP::powerCode(99) == 63);
+    EXPECT_TRUE(LACF_CAP::presetFor(433775000) == 2 && LACF_CAP::presetFor(439912500) == 3 && LACF_CAP::presetFor(434855000) == 4 && LACF_CAP::presetFor(433900000) == 0);
+}
+
+TEST(LacfCapability, ScheduleFollowsTheSpec) {
+    const uint32_t H = LACF_CAP::Schedule::ONE_HOUR_MS;
+    LACF_CAP::Schedule s;
+    EXPECT_TRUE(s.due(1000));                                                       // at start-up
+    s.sent(1000);
+    EXPECT_FALSE(s.due(2000));
+    for (int i = 0; i < 20; i++) s.noteFrame();
+    EXPECT_FALSE(s.due(1000 + H - 1));                                              // at most once an hour
+    EXPECT_TRUE(s.due(1000 + H));
+    s.sent(1000 + H);
+    for (int i = 0; i < 3; i++) s.noteFrame();
+    EXPECT_FALSE(s.due(1000 + 6 * H));
+    EXPECT_TRUE(s.due(1000 + 7 * H));                                               // at least every 6 hours
+    s.sent(1000 + 7 * H);
+    s.settingsChanged();
+    EXPECT_TRUE(s.due(1000 + 7 * H + 5));
+    s.sent(1000 + 7 * H + 5);
+    EXPECT_FALSE(s.due(1000 + 7 * H + 10));
+    LACF_CAP::Schedule w;
+    w.sent(0xFFFFFFFFu - 100);
+    EXPECT_TRUE(!w.due(5) && w.due(5 + 6 * H));                                     // millis() wrapping
+}
+
+TEST(LacfCapability, NeighboursAreKeptDirectOrRelayedAndExpire) {
+    const uint32_t H = 3600UL * 1000UL;
+    LACF_CAP::Neighbors n;
+    LACF_CAP::Capability c;
+    c.role = LACF_CAP::ROLE_DIGIPEATER; c.power = 30;
+    EXPECT_TRUE(n.find("K6ATV-1", 0) == nullptr && n.count(0) == 0);
+    n.update("K6ATV-1", c, false, 1000);
+    ASSERT_TRUE(n.find("K6ATV-1", 2000) != nullptr);
+    EXPECT_FALSE(n.find("K6ATV-1", 2000)->direct);
+    n.update("K6ATV-1", c, true, 3000);
+    n.update("K6ATV-1", c, false, 4000);
+    EXPECT_TRUE(n.find("K6ATV-1", 5000)->direct);                                   // heard direct a moment ago
+    n.update("K6ATV-1", c, false, 4000 + 2 * H);
+    EXPECT_FALSE(n.find("K6ATV-1", 5000 + 2 * H)->direct);
+    EXPECT_TRUE(n.find("K6ATV-1", 4000 + 2 * H + 23 * H) != nullptr && n.find("K6ATV-1", 4000 + 2 * H + 25 * H) == nullptr);
+    for (int i = 0; i < 40; i++) n.update("N" + std::to_string(i), c, true, 10000 + i);
+    EXPECT_TRUE(n.count(10100) == LACF_CAP::Neighbors::SIZE && n.find("N39", 10100) != nullptr && n.find("N0", 10100) == nullptr);
+}
+
+TEST(HybridFrame, Type03CapabilityVectorsEncodeDecodeAndSurviveARelay) {
+    for (const CapVec& v : CAP3_VECTORS) {
+        std::string tnc2 = hexText(v.tnc2), back;
+        std::vector<uint8_t> want = hexBytes(v.frame), cap = hexBytes(v.cap), frame;
+        ASSERT_TRUE(HYBRID_FRAME::encode3(tnc2, {}, frame, cap.data())) << v.frame;
+        EXPECT_EQ(frame, want);
+        uint8_t got[4] = {0, 0, 0, 0};
+        bool has = false;
+        std::vector<NATIVE_APRS::RxtTuple> rxt;
+        ASSERT_TRUE(HYBRID_FRAME::decode(want.data(), want.size(), back, rxt, got, &has));
+        EXPECT_TRUE(has);
+        EXPECT_EQ(back, tnc2);
+        EXPECT_TRUE(std::equal(got, got + 4, cap.begin()));
+        size_t comma = tnc2.find(','), colon = tnc2.find(':');                      // a relay copies them: WIDE1-1 first in the path becomes the relay's callsign
+        if (comma != std::string::npos && comma < colon && tnc2.compare(comma + 1, 7, "WIDE1-1") == 0 && (tnc2[comma + 8] == ',' || tnc2[comma + 8] == ':')) {
+            std::string newText = tnc2.substr(0, comma + 1) + "N0RLY-1*" + tnc2.substr(comma + 8);
+            std::vector<uint8_t> relayed;
+            int off = -2;
+            const uint8_t tuple[4] = { 50, 20, 45, 10 };
+            ASSERT_TRUE(HYBRID_FRAME::relay(want.data(), want.size(), newText, "N0RLY-1", tuple, relayed, &off));
+            uint8_t rc[4] = {0, 0, 0, 0};
+            bool rh = false;
+            std::string rb;
+            std::vector<NATIVE_APRS::RxtTuple> rr;
+            ASSERT_TRUE(HYBRID_FRAME::decode(relayed.data(), relayed.size(), rb, rr, rc, &rh));
+            EXPECT_TRUE(rh);
+            EXPECT_TRUE(std::equal(rc, rc + 4, cap.begin()));
+        }
+    }
+    std::vector<uint8_t> f = hexBytes(HB3_VECTORS[0].frame);                        // a frame without them reports none
+    std::string back;
+    std::vector<NATIVE_APRS::RxtTuple> rxt;
+    uint8_t c[4];
+    bool has = true;
+    ASSERT_TRUE(HYBRID_FRAME::decode(f.data(), f.size(), back, rxt, c, &has));
+    EXPECT_FALSE(has);
 }

@@ -17,6 +17,7 @@
  */
 
 #include <APRSPacketLib.h>
+#include "lacf_capability.h"
 #include <esp_log.h>
 #include <RadioLib.h>
 #include <SPI.h>
@@ -41,6 +42,7 @@
 
 extern Configuration    Config;
 extern LoraType         *currentLoRaType;
+extern bool              digipeaterActive;
 extern uint8_t          loraIndex;
 extern int              loraIndexSize;
 extern SemaphoreHandle_t spiMutex;
@@ -117,6 +119,8 @@ namespace LoRa_Utils {
     // The last LACF frame received, as bytes, and when it had been received completely: a digipeater builds the frame it relays from these (sendRelayedPacket).
     static std::vector<uint8_t> lastRxFrame;
     static uint32_t             lastRxFrameDoneMs = 0;
+    static LACF_CAP::Schedule   capSchedule;              // 3.0.0-dev.1 capability bytes (spec 12): when to send them, and what the neighbours announced
+    static LACF_CAP::Neighbors  capNeighbors;
     static bool                 rxRelayOnly = false;      // the last frame is a 3C FF 03 frame that cannot be decoded here but can be relayed (structure and CRC checked): see handleRelayOnly
     static std::string          relayOnlyFront;
     static unsigned             relayOnlyKey = 0;
@@ -476,9 +480,21 @@ namespace LoRa_Utils {
         if (HYBRID_FRAME::isHybrid(data, length)) {                     // native frame, any kind: raw or PPM-coded content (spec 11)
             std::string tnc2;
             std::vector<NATIVE_APRS::RxtTuple> rxt;
-            if (!HYBRID_FRAME::decode(data, length, tnc2, rxt)) {
+            uint8_t capBytes[LACF_CAP::BYTES];
+            bool hasCap = false;
+            if (!HYBRID_FRAME::decode(data, length, tnc2, rxt, capBytes, &hasCap)) {
                 ESP_LOGW(TAG, "Hybrid frame dropped (%u bytes)", (unsigned)length);
                 return "";
+            }
+            if (hasCap) {                                                   // the sender announced itself (3.0.0-dev.1): kept per station, direct or heard through a relay
+                LACF_CAP::Capability cap;
+                LACF_CAP::parse(capBytes, cap);
+                const size_t gt = tnc2.find('>'), colon = tnc2.find(':');
+                if (gt != std::string::npos && colon != std::string::npos && gt < colon) {
+                    const bool direct = tnc2.substr(0, colon).find('*') == std::string::npos;
+                    capNeighbors.update(tnc2.substr(0, gt), cap, direct, millis());
+                    ESP_LOGI(TAG, "Capabilities of %s (%s): %s", tnc2.substr(0, gt).c_str(), direct ? "direct" : "via a relay", LACF_CAP::describe(cap).c_str());
+                }
             }
             ESP_LOGI(TAG, "Hybrid frame %u bytes, %u expanded", (unsigned)length, (unsigned)(tnc2.size() + 3));
             return String("\x3c\xff\x01") + NATIVE_APRS::toText(tnc2, rxt).c_str();
@@ -503,13 +519,26 @@ namespace LoRa_Utils {
         return readFrame(text);
     }
 
-    // Hybrid form (spec 11) of a text packet, or empty when it has to go as text.
-    static std::vector<uint8_t> hybridFrame(const String& packet, bool type3 = false) {
+    // What this station is, from its settings (3.0.0-dev.1 capability bytes): a repeater or digipeater, or a tracker that listens.
+    static LACF_CAP::Capability ownCapability() {
+        LACF_CAP::Capability c;
+        c.role   = (Config.lora.repeaterMode || digipeaterActive) ? LACF_CAP::ROLE_DIGIPEATER : LACF_CAP::ROLE_LISTENS;
+        c.model  = LACF_CAP::MODEL_0_HELD;                                      // this firmware holds model 0
+        c.sf     = LACF_CAP::sfCode(currentLoRaType->spreadingFactor);
+        c.bw     = LACF_CAP::bwCode(currentLoRaType->signalBandwidth);
+        c.cr     = LACF_CAP::crCode(currentLoRaType->codingRate4);
+        c.power  = LACF_CAP::powerCode(currentLoRaType->power);                 // the configured output of the module in dBm, not the power radiated
+        c.preset = LACF_CAP::presetFor(currentLoRaType->frequency);
+        return c;
+    }
+
+    // Hybrid form (spec 11) of a text packet, or empty when it has to go as text. cap: the four capability bytes of a type 3 frame, or nullptr.
+    static std::vector<uint8_t> hybridFrame(const String& packet, bool type3 = false, const uint8_t* cap = nullptr) {
         std::string tnc2;
         std::vector<NATIVE_APRS::RxtTuple> rxt;
         std::vector<uint8_t> frame;
         if (!NATIVE_APRS::fromText(std::string(packet.c_str(), packet.length()), "", tnc2, rxt) ||
-            !(type3 ? HYBRID_FRAME::encode3(tnc2, rxt, frame) : HYBRID_FRAME::encode(tnc2, rxt, frame))) {
+            !(type3 ? HYBRID_FRAME::encode3(tnc2, rxt, frame, cap) : HYBRID_FRAME::encode(tnc2, rxt, frame))) {
             return {};
         }
         return frame;
@@ -540,10 +569,15 @@ namespace LoRa_Utils {
         fmt = HYBRID_FORCE_TX;   // test builds only (-DHYBRID_FORCE_TX=3): hybrid frames without the settings page
 #endif
         std::vector<uint8_t> hybrid;
-        bool relayed = false;
+        bool relayed = false, withCap = false;
+        uint8_t capBytes[LACF_CAP::BYTES];
         if (fmt == 3 || fmt == 4) {                                    // 3 = LACF 2.0.0 (3C FF 02), 4 = the experimental 3.0.0-dev.1 frame (3C FF 03)
             if (relay != nullptr && !relay->frame.empty()) { hybrid = relay->frame; relayed = true; }     // a relayed LACF frame (sendRelayedPacket)
-            else hybrid = hybridFrame(newPacket, fmt == 4);
+            else {
+                if (fmt == 4 && capSchedule.due(millis())) { LACF_CAP::pack(ownCapability(), capBytes); withCap = true; }       // 3.0.0-dev.1: the capability bytes ride on some of our own frames
+                hybrid = hybridFrame(newPacket, fmt == 4, withCap ? capBytes : nullptr);
+                if (hybrid.empty() && withCap) { withCap = false; hybrid = hybridFrame(newPacket, true, nullptr); }           // too long with them: without, they go with a later frame
+            }
             if (hybrid.empty()) ESP_LOGW(TAG, "Hybrid: sent as text, packet cannot be encoded");
         }
         int state;
@@ -555,11 +589,12 @@ namespace LoRa_Utils {
                 hybrid[relay->ownOffset + 3] = RXT_Scale::timeToHop(hopMs, RXT_Scale::tthScale(currentLoRaType->spreadingFactor, currentLoRaType->signalBandwidth));
             }
             state = radio.transmit(hybrid.data(), hybrid.size());
+            if (fmt == 4 && !relayed && state == RADIOLIB_ERR_NONE) { if (withCap) capSchedule.sent(millis()); else capSchedule.noteFrame(); }
             if (relayed) {
                 ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes), relayed%s", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3),
                          relay->ownOffset >= 0 ? (", RXT tuple added, time to hop " + String(hopMs) + " ms").c_str() : ", no RXT tuple of its own");
             } else {
-                ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes)", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3));
+                ESP_LOGI(TAG, "Hybrid Tx %u bytes (text frame %u bytes)%s", (unsigned)hybrid.size(), (unsigned)(newPacket.length() + 3), withCap ? ", with the capability bytes" : "");
             }
         } else {
             state = transmitText(newPacket);   // plain text frame
