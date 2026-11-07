@@ -60,6 +60,10 @@ namespace LoRa_Utils {
     // A packet the digipeater has just rewritten (ownCall* in its path), from the frame received last: sent as an LACF frame that keeps the earlier hops' tuples and carries the relay's own
     // (spec 11, "Relay"), with rssi, snr and freqError of that reception. When it cannot be relayed that way, or the Tx frame format is not hybrid, it is sent as sendNewPacket would.
     void sendRelayedPacket(const String& newPacket, const String& ownCall, int rssi, float snr, int freqError);
+    // A 3C FF 03 frame this station could not decode (a model or destination code it does not hold) but whose structure and CRC are good (3.0.0-dev.1, spec 12, "Relay without the model"):
+    // when the repeater or digipeater is on and the Tx frame format is hybrid, the digipeater's own rule (APRSPacketLib::generateDigipeatedPacket) is applied to its front and the frame is relayed
+    // with that path, its content copied as received. It is never shown, stored or sent as text; a frame that cannot be relayed as a frame is dropped. Call after receivePacket().
+    void handleRelayOnly(const String& ownCall, const String& digipeatAlias, bool repeaterMode, bool digipeaterActive);
     void wakeRadio();
     ReceivedLoRaPacket receiveFromSleep();
     ReceivedLoRaPacket receivePacket();

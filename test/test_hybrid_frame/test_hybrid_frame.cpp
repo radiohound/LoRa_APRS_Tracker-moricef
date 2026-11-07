@@ -1,6 +1,9 @@
 #include "hybrid_frame.h"
 #include "vectors.h"
 #include "relay_vectors.h"
+#include "vectors3.h"
+#include "relay_vectors3.h"
+#include "passthrough3.h"
 #include "rxt_scale.h"
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -162,4 +165,76 @@ TEST(HybridFrame, RxtScalesMatchTheSpecExampleTuple) {
     EXPECT_EQ(RXT_Scale::frequencyOffset(-9999), 0);
     EXPECT_EQ(RXT_Scale::frequencyOffset(9999), 89);
     EXPECT_EQ(RXT_Scale::timeToHop(100000000UL, 327.68f), 89);
+}
+
+// ---- 3.0.0-dev.1 (frame type 3C FF 03, spec 12): a second decoder next to the 2.0.0 one
+
+TEST(HybridFrame, Type03EncodesAndDecodesTheSpecVectors) {
+    for (const HbVec& v : HB3_VECTORS) {
+        std::string tnc2 = hexText(v.tnc2);
+        std::vector<uint8_t> frame;
+        ASSERT_TRUE(HYBRID_FRAME::encode3(tnc2, {}, frame)) << v.frame;
+        EXPECT_EQ(frame, hexBytes(v.frame));
+        EXPECT_TRUE(HYBRID_FRAME::isHybrid(frame.data(), frame.size()));
+        std::string back;
+        std::vector<NATIVE_APRS::RxtTuple> rxt;
+        ASSERT_TRUE(HYBRID_FRAME::decode(frame.data(), frame.size(), back, rxt));
+        EXPECT_EQ(back, tnc2);
+        EXPECT_TRUE(rxt.empty());
+    }
+}
+
+TEST(HybridFrame, Type03RelayMatchesTheReferenceRelayVectors) {
+    for (const RelayVec& v : RELAY3_VECTORS) {
+        std::vector<uint8_t> rx = hexBytes(v.rx), want = hexBytes(v.relayed), got;
+        const uint8_t tuple[4] = { 50, 20, 45, 10 };
+        int off = -2;
+        ASSERT_TRUE(HYBRID_FRAME::relay(rx.data(), rx.size(), hexText(v.tnc2), "N0RLY-1", tuple, got, &off)) << v.rx;
+        EXPECT_EQ(got, want);
+        std::string text;
+        std::vector<NATIVE_APRS::RxtTuple> now;
+        ASSERT_TRUE(HYBRID_FRAME::decode(got.data(), got.size(), text, now));
+        EXPECT_EQ(text, hexText(v.tnc2));
+    }
+}
+
+TEST(HybridFrame, ATypeFrameIsNotReadByTheOtherDecoder) {
+    // the same bytes with the other type byte: neither decoder accepts them (the 2.0.0 CRC and V differ from the 3.0.0-dev.1 ones)
+    std::vector<uint8_t> f03 = hexBytes(HB3_VECTORS[0].frame), f02 = hexBytes(HB_VECTORS[0].frame);
+    std::string out;
+    std::vector<NATIVE_APRS::RxtTuple> rxt;
+    std::vector<uint8_t> as02 = f03; as02[2] = 0x02;
+    std::vector<uint8_t> as03 = f02; as03[2] = 0x03;
+    EXPECT_FALSE(HYBRID_FRAME::decode(as02.data(), as02.size(), out, rxt));
+    EXPECT_FALSE(HYBRID_FRAME::decode(as03.data(), as03.size(), out, rxt));
+}
+
+// relay without the model, with the digipeater's own path: a frame this station cannot decode is relayed from its front
+TEST(HybridFrame, Type03FrameWithoutTheModelIsRelayedFromItsFront) {
+    for (const PassVec& v : PASS3_VECTORS) {
+        std::vector<uint8_t> rx = hexBytes(v.rx), want = hexBytes(v.relayed), got;
+        std::string back, front, newFront;
+        std::vector<NATIVE_APRS::RxtTuple> rxt;
+        unsigned key = 0, key2 = 0;
+        EXPECT_FALSE(HYBRID_FRAME::decode(rx.data(), rx.size(), back, rxt)) << v.rx;
+        ASSERT_TRUE(HYBRID_FRAME::front(rx.data(), rx.size(), front, &key)) << v.rx;
+        EXPECT_EQ(front.back(), ':');
+        ASSERT_TRUE(HYBRID_FRAME::front(want.data(), want.size(), newFront, &key2));   // the new path: what the digipeater's rule would give
+        EXPECT_EQ(key, key2);                                                           // the CRC is the frame's identity
+        const uint8_t tuple[4] = { 50, 20, 45, 10 };
+        int off = -2;
+        ASSERT_TRUE(HYBRID_FRAME::relay(rx.data(), rx.size(), newFront, "N0RLY-1", tuple, got, &off)) << v.rx;
+        EXPECT_EQ(got, want);
+    }
+}
+
+TEST(HybridFrame, Type03DamagedFrameHasNoFront) {
+    for (const char* h : PASS3_DAMAGED) {
+        std::vector<uint8_t> rx = hexBytes(h);
+        std::string front;
+        EXPECT_FALSE(HYBRID_FRAME::front(rx.data(), rx.size(), front)) << h;
+    }
+    std::vector<uint8_t> f02 = hexBytes(HB_VECTORS[0].frame);
+    std::string front;
+    EXPECT_FALSE(HYBRID_FRAME::front(f02.data(), f02.size(), front));                  // front() is for type 03 only
 }

@@ -11,12 +11,20 @@
 
 namespace HYBRID_FRAME {
 
-    // True for 3C FF 02 with information kind 2 or 3 (the native decoder only knows 0 and 1).
+    // True for 3C FF 02 (the tested 2.0.0 frame) and for 3C FF 03 (the experimental 3.0.0-dev.1 frame, spec 12; a second decoder, local experiment).
     bool isHybrid(const uint8_t* data, size_t size);
 
     // TNC2 packet (and its RXT tuples, one per path element, characters '!'..'z') to a hybrid frame.
     // False when the packet cannot be encoded: the caller then sends it as text.
     bool encode(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out);
+
+    // The same for a 3C FF 03 frame (3.0.0-dev.1, no capability bytes). Tuple characters are '!'..'z' only for now.
+    bool encode3(const std::string& tnc2, const std::vector<NATIVE_APRS::RxtTuple>& rxt, std::vector<uint8_t>& out);
+
+    // The front of a 3C FF 03 frame whatever its model: the structure and the CRC (over the bytes as sent) are checked, the content is not decoded. frontText is
+    // "SRC>DST,PATH:" (DST is "?" when its code is not assigned), so a digipeater can apply its own path rule to a frame it cannot decode; relay() then forwards it
+    // without the model. key, if given, gets the frame's CRC-16, to recognise a repeat. False for any other frame.
+    bool front(const uint8_t* data, size_t size, std::string& frontText, unsigned* key = nullptr);
 
     // The outgoing frame of a relay (spec 11, "Relay"): the received frame rxFrame with the new path newTnc2 (the digipeater's rule has already been applied to it, so it holds
     // ownCall + "*" as the element it used; the packet text without any RXT trailer), the tuples of the earlier hops kept, and the relay's own 4-byte tuple (ownTuple, normally with a

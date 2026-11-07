@@ -16,6 +16,7 @@
  * along with LoRa APRS Tracker. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <APRSPacketLib.h>
 #include <esp_log.h>
 #include <RadioLib.h>
 #include <SPI.h>
@@ -116,12 +117,18 @@ namespace LoRa_Utils {
     // The last LACF frame received, as bytes, and when it had been received completely: a digipeater builds the frame it relays from these (sendRelayedPacket).
     static std::vector<uint8_t> lastRxFrame;
     static uint32_t             lastRxFrameDoneMs = 0;
+    static bool                 rxRelayOnly = false;      // the last frame is a 3C FF 03 frame that cannot be decoded here but can be relayed (structure and CRC checked): see handleRelayOnly
+    static std::string          relayOnlyFront;
+    static unsigned             relayOnlyKey = 0;
+    static int                  relayOnlyRssi = 0, relayOnlyFreqError = 0;
+    static float                relayOnlySnr = 0;
 
     static int16_t readFrame(String& packet) {
         size_t len = radio.getPacketLength();
         if (len > 255) len = 255;
         uint8_t buf[256];
         int16_t state = radio.readData(buf, len);
+        rxRelayOnly = false;
         if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_ERR_CRC_MISMATCH || state == RADIOLIB_ERR_LORA_HEADER_DAMAGED) {
             buf[len] = 0;
             // plain text frame or a native frame (3C FF 02): the existing decoder
@@ -130,6 +137,10 @@ namespace LoRa_Utils {
             if (state == RADIOLIB_ERR_NONE && !packet.isEmpty() && HYBRID_FRAME::isHybrid(buf, len)) {
                 lastRxFrame.assign(buf, buf + len);
                 lastRxFrameDoneMs = rxDoneMs;
+            } else if (state == RADIOLIB_ERR_NONE && packet.isEmpty() && len >= 5 && buf[0] == 0x3C && buf[1] == 0xFF && buf[2] == 0x03 && HYBRID_FRAME::front(buf, len, relayOnlyFront, &relayOnlyKey)) {
+                lastRxFrame.assign(buf, buf + len);                                                  // not decodable here, but good enough to relay: see handleRelayOnly
+                lastRxFrameDoneMs = rxDoneMs;
+                rxRelayOnly = true;
             } else {
                 lastRxFrame.clear();
             }
@@ -493,12 +504,12 @@ namespace LoRa_Utils {
     }
 
     // Hybrid form (spec 11) of a text packet, or empty when it has to go as text.
-    static std::vector<uint8_t> hybridFrame(const String& packet) {
+    static std::vector<uint8_t> hybridFrame(const String& packet, bool type3 = false) {
         std::string tnc2;
         std::vector<NATIVE_APRS::RxtTuple> rxt;
         std::vector<uint8_t> frame;
         if (!NATIVE_APRS::fromText(std::string(packet.c_str(), packet.length()), "", tnc2, rxt) ||
-            !HYBRID_FRAME::encode(tnc2, rxt, frame)) {
+            !(type3 ? HYBRID_FRAME::encode3(tnc2, rxt, frame) : HYBRID_FRAME::encode(tnc2, rxt, frame))) {
             return {};
         }
         return frame;
@@ -530,9 +541,9 @@ namespace LoRa_Utils {
 #endif
         std::vector<uint8_t> hybrid;
         bool relayed = false;
-        if (fmt == 3) {
+        if (fmt == 3 || fmt == 4) {                                    // 3 = LACF 2.0.0 (3C FF 02), 4 = the experimental 3.0.0-dev.1 frame (3C FF 03)
             if (relay != nullptr && !relay->frame.empty()) { hybrid = relay->frame; relayed = true; }     // a relayed LACF frame (sendRelayedPacket)
-            else hybrid = hybridFrame(newPacket);
+            else hybrid = hybridFrame(newPacket, fmt == 4);
             if (hybrid.empty()) ESP_LOGW(TAG, "Hybrid: sent as text, packet cannot be encoded");
         }
         int state;
@@ -576,7 +587,7 @@ namespace LoRa_Utils {
 #ifdef HYBRID_FORCE_TX
         fmt = HYBRID_FORCE_TX;
 #endif
-        if (fmt == 3 && !lastRxFrame.empty()) {
+        if ((fmt == 3 || fmt == 4) && !lastRxFrame.empty()) {
             std::string tnc2;
             std::vector<NATIVE_APRS::RxtTuple> trailer;
             // the packet without its RXT trailer: the earlier hops' tuples are taken from the received frame, not from the text
@@ -594,6 +605,43 @@ namespace LoRa_Utils {
             }
         }
         sendNewPacket(newPacket);
+    }
+
+    void handleRelayOnly(const String& ownCall, const String& digipeatAlias, bool repeaterMode, bool digipeaterActive) {
+        if (!rxRelayOnly) return;
+        rxRelayOnly = false;
+        int fmt = Config.lora.txFormat;
+#ifdef HYBRID_FORCE_TX
+        fmt = HYBRID_FORCE_TX;
+#endif
+        if ((!repeaterMode && !digipeaterActive) || (fmt != 3 && fmt != 4) || lastRxFrame.empty()) return;     // only a station that relays and sends LACF frames relays one
+        static unsigned lastKey = 0;
+        static uint32_t lastKeyMs = 0;
+        if (relayOnlyKey == lastKey && lastKeyMs != 0 && millis() - lastKeyMs < 15000) return;               // a repeat of a frame just relayed: its CRC is its identity
+        lastKey = relayOnlyKey; lastKeyMs = millis();
+        const String front = String(relayOnlyFront.c_str());
+        const int gt = front.indexOf('>');
+        if (gt <= 0) return;
+        if (front.substring(0, gt) == ownCall) return;                                                         // never repeat our own frame
+        const String text = String("\x3c\xff\x01") + front + ">";                                             // the front and a placeholder information field: the path is all that is used
+        if (front.indexOf(digipeatAlias + "*") != -1) return;                                                  // the alias is already used in the path
+        String digipeated = APRSPacketLib::generateDigipeatedPacket(text, ownCall, digipeatAlias);
+        if (digipeated == "X") { ESP_LOGW(TAG, "Not relayed without the model (Missing WIDEn-N)"); return; }
+        ESP_LOGI(TAG, "Relayed without the model: %s", digipeated.c_str());
+        delay(random(100, 500));                                                                               // random delay to avoid collisions, as in repeater mode
+        std::string tnc2;
+        std::vector<NATIVE_APRS::RxtTuple> trailer;
+        if (!NATIVE_APRS::fromText(std::string(digipeated.c_str(), digipeated.length()), "", tnc2, trailer)) return;
+        const uint8_t tuple[4] = { RXT_Scale::rssi((float)relayOnlyRssi), RXT_Scale::snr(relayOnlySnr), RXT_Scale::frequencyOffset(relayOnlyFreqError), 0 };
+        RelayFrame relay;
+        int offset = -1;
+        if (HYBRID_FRAME::relay(lastRxFrame.data(), lastRxFrame.size(), tnc2, std::string(ownCall.c_str(), ownCall.length()), tuple, relay.frame, &offset)) {
+            relay.ownOffset = offset;
+            relay.rxDoneMs  = lastRxFrameDoneMs;
+            sendNewPacket(digipeated, &relay);
+        } else {
+            ESP_LOGW(TAG, "Frame without the model cannot be relayed as a frame: dropped (the placeholder text is never sent)");
+        }
     }
 
     void wakeRadio() {
@@ -657,6 +705,9 @@ namespace LoRa_Utils {
                 #endif
                 ESP_LOGD(TAG, "readData state=%d", state);
                 if (state == RADIOLIB_ERR_NONE) {
+                    if (packet.isEmpty() && rxRelayOnly) {                       // kept for handleRelayOnly: the radio values of this reception
+                        relayOnlyRssi = radio.getRSSI(); relayOnlySnr = radio.getSNR(); relayOnlyFreqError = radio.getFrequencyError();
+                    }
                     if(!packet.isEmpty()) {
                         ESP_LOGI(TAG, "Rx ---> %s", packet.substring(3).c_str());
                         receivedLoraPacket.text       = packet;

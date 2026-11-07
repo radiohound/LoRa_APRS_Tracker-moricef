@@ -351,6 +351,7 @@ void loop() {
     }
 
     ReceivedLoRaPacket packet = LoRa_Utils::receivePacket();
+    LoRa_Utils::handleRelayOnly(currentBeacon->callsign, Config.lora.digipeatAlias, Config.lora.repeaterMode, digipeaterActive);   // a 3C FF 03 frame we cannot decode but can relay (3.0.0-dev.1)
 
     // Log raw frame and update stats (if packet received)
     if (!packet.text.isEmpty()) {
