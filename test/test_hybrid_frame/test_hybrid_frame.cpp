@@ -7,6 +7,7 @@
 #include "capvectors3.h"
 #include "reject3.h"
 #include "lacf_capability.h"
+#include "relay_filter.h"
 extern "C" {
 #include "hb3.h"
 }
@@ -366,4 +367,19 @@ TEST(HybridFrame, Type03CapabilityVectorsEncodeDecodeAndSurviveARelay) {
     bool has = true;
     ASSERT_TRUE(HYBRID_FRAME::decode(f.data(), f.size(), back, rxt, c, &has));
     EXPECT_FALSE(has);
+}
+
+// A frame relayed without being read is held to the iGate digipeater's own two rules: no NOGATE in the path, and a sender that is a valid callsign.
+TEST(RelayFilter, TheIGateRulesForAFrameWeCannotRead) {
+    EXPECT_FALSE(RELAY_FILTER::refused("K6ATV-10>APLRT1,WIDE1-1:"));
+    EXPECT_FALSE(RELAY_FILTER::refused("N0RLY>APWL2K,WIDE1-1,WIDE2-2:"));
+    EXPECT_FALSE(RELAY_FILTER::refused("A0AA-5>APLRT1,WIDE1-1:"));                    // four characters, padded like the iGate does
+    EXPECT_TRUE(RELAY_FILTER::refused("K6ATV-10>APLRT1,NOGATE,WIDE1-1:"));
+    EXPECT_TRUE(RELAY_FILTER::refused("K6ATV-10>APLRT1,WIDE1-1,NOGATE:"));
+    EXPECT_TRUE(RELAY_FILTER::refused("K6ATV-01>APLRT1,WIDE1-1:"));                   // a two-digit SSID may not start with 0 (a single 0 passes, as in the iGate)
+    EXPECT_TRUE(RELAY_FILTER::refused("K6ATV-100>APLRT1,WIDE1-1:"));
+    EXPECT_TRUE(RELAY_FILTER::refused("ABC>APLRT1,WIDE1-1:"));                        // too short
+    EXPECT_TRUE(RELAY_FILTER::refused("TOOLONGCALL>APLRT1,WIDE1-1:"));
+    EXPECT_TRUE(RELAY_FILTER::refused(">APLRT1,WIDE1-1:"));
+    EXPECT_TRUE(RELAY_FILTER::refused("no front at all"));
 }

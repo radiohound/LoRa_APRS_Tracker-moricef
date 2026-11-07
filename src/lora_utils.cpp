@@ -32,6 +32,7 @@
 #include "lora_utils.h"
 #include "native_aprs.h"
 #include "hybrid_frame.h"
+#include "relay_filter.h"
 #include "rxt_scale.h"
 #include "display.h"
 #include "station_utils.h"
@@ -654,6 +655,7 @@ namespace LoRa_Utils {
         static uint32_t lastKeyMs = 0;
         if (relayOnlyKey == lastKey && lastKeyMs != 0 && millis() - lastKeyMs < 15000) return;               // a repeat of a frame just relayed: its CRC is its identity
         lastKey = relayOnlyKey; lastKeyMs = millis();
+        if (RELAY_FILTER::refused(relayOnlyFront)) return;                                                     // as the iGate: not with NOGATE in the path, not from a sender that is not a valid callsign
         const String front = String(relayOnlyFront.c_str());
         const int gt = front.indexOf('>');
         if (gt <= 0) return;

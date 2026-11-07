@@ -9,7 +9,8 @@
       "+<hbi.c>",
       "+<hbc.c>",
       "+<hybrid_frame.cpp>",
-      "+<lacf_capability.cpp>"
+      "+<lacf_capability.cpp>",
+      "+<relay_filter.cpp>"
     ],
     "flags": [
       "-DHB_FAST",
