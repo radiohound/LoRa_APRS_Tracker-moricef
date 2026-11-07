@@ -5,6 +5,7 @@
 #include "relay_vectors3.h"
 #include "passthrough3.h"
 #include "capvectors3.h"
+#include "reject3.h"
 #include "lacf_capability.h"
 extern "C" {
 #include "hb3.h"
@@ -230,6 +231,22 @@ TEST(HybridFrame, Type03FrameWithoutTheModelIsRelayedFromItsFront) {
         int off = -2;
         ASSERT_TRUE(HYBRID_FRAME::relay(rx.data(), rx.size(), newFront, "N0RLY-1", tuple, got, &off)) << v.rx;
         EXPECT_EQ(got, want);
+    }
+}
+
+// Only a model or a destination code we do not hold may be relayed unread (spec 12 step 8): every other rejection vector is a damaged frame, even with a good CRC.
+TEST(HybridFrame, Type03OnlyAMissingModelIsRelayedUnread) {
+    for (const char* h : REJECT3_RELAYABLE) {
+        std::vector<uint8_t> rx = hexBytes(h);
+        std::string back, front;
+        std::vector<NATIVE_APRS::RxtTuple> rxt;
+        EXPECT_FALSE(HYBRID_FRAME::decode(rx.data(), rx.size(), back, rxt)) << h;
+        EXPECT_TRUE(HYBRID_FRAME::front(rx.data(), rx.size(), front)) << h;
+    }
+    for (const char* h : REJECT3_NOT_RELAYABLE) {
+        std::vector<uint8_t> rx = hexBytes(h);
+        std::string front;
+        EXPECT_FALSE(HYBRID_FRAME::front(rx.data(), rx.size(), front)) << h;
     }
 }
 
